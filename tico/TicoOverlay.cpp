@@ -575,14 +575,15 @@ void TicoOverlay::RenderGame(ImDrawList *dl, ImVec2 displaySize,
                              int height, int fboWidth, int fboHeight) {
   if (texture == 0)
     return;
-  static constexpr int CORE_BASE_W = 320, CORE_BASE_H = 240;
+  float baseW = (width > 0) ? width : 160;
+  float baseH = (height > 0) ? height : 144;
   float dstWidth = displaySize.x, dstHeight = displaySize.y, offsetX = 0,
         offsetY = 0;
   if (m_displayMode == GambatteDisplayMode::Integer) {
     int scale;
     if (m_displaySize == GambatteDisplaySize::Auto) {
-      int scaleX = (int)displaySize.x / CORE_BASE_W,
-          scaleY = (int)displaySize.y / CORE_BASE_H;
+      int scaleX = (int)displaySize.x / baseW,
+          scaleY = (int)displaySize.y / baseH;
       scale = std::min(scaleX, scaleY);
       if (scale < 1)
         scale = 1;
@@ -591,8 +592,8 @@ void TicoOverlay::RenderGame(ImDrawList *dl, ImVec2 displaySize,
       if (scale < 1)
         scale = 1;
     }
-    dstWidth = CORE_BASE_W * scale;
-    dstHeight = CORE_BASE_H * scale;
+    dstWidth = baseW * scale;
+    dstHeight = baseH * scale;
     if (dstWidth > displaySize.x)
       dstWidth = displaySize.x;
     if (dstHeight > displaySize.y)
@@ -638,15 +639,20 @@ void TicoOverlay::RenderGame(ImDrawList *dl, ImVec2 displaySize,
     }
     }
   }
-  offsetX = (displaySize.x - dstWidth) / 2.0f;
-  offsetY = (displaySize.y - dstHeight) / 2.0f;
+  dstWidth = std::floor(dstWidth);
+  dstHeight = std::floor(dstHeight);
+  offsetX = std::floor((displaySize.x - dstWidth) / 2.0f);
+  offsetY = std::floor((displaySize.y - dstHeight) / 2.0f);
   dl->AddRectFilled(ImVec2(0, 0), displaySize, IM_COL32(0, 0, 0, 255));
   float u_max = (fboWidth > 0 && width > 0) ? (float)width / fboWidth : 1.0f;
   float v_max =
       (fboHeight > 0 && height > 0) ? (float)height / fboHeight : 1.0f;
+  float half_u = (fboWidth > 0) ? 0.5f / fboWidth : 0.0f;
+  float half_v = (fboHeight > 0) ? 0.5f / fboHeight : 0.0f;
   dl->AddImage((ImTextureID)(intptr_t)texture, ImVec2(offsetX, offsetY),
-               ImVec2(offsetX + dstWidth, offsetY + dstHeight), ImVec2(0, 0),
-               ImVec2(u_max, v_max));
+               ImVec2(offsetX + dstWidth, offsetY + dstHeight),
+               ImVec2(half_u, half_v),
+               ImVec2(u_max - half_u, v_max - half_v));
 }
 
 void TicoOverlay::RenderOverlayBackground(ImDrawList *dl, ImVec2 displaySize) {
@@ -1176,7 +1182,7 @@ void TicoOverlay::LoadCoreSettings() {
                             ? GambatteDisplayMode::Integer
                             : GambatteDisplayMode::Display;
       } else
-        m_displayMode = GambatteDisplayMode::Display;
+        m_displayMode = GambatteDisplayMode::Integer;
       if (j.contains("display_size") && j["display_size"].is_string()) {
         std::string v = j["display_size"].get<std::string>();
         if (v == "Stretch")
@@ -1194,7 +1200,7 @@ void TicoOverlay::LoadCoreSettings() {
         else
           m_displaySize = GambatteDisplaySize::_4_3;
       } else
-        m_displaySize = GambatteDisplaySize::_4_3;
+        m_displaySize = GambatteDisplaySize::Auto;
       if (j.contains("shader_type") && j["shader_type"].is_string()) {
         std::string v = j["shader_type"].get<std::string>();
         if (v == "LCD")
@@ -1212,12 +1218,12 @@ void TicoOverlay::LoadCoreSettings() {
       } else
         m_shaderSelection = 0;
     } else {
-      m_displayMode = GambatteDisplayMode::Display;
-      m_displaySize = GambatteDisplaySize::_4_3;
+      m_displayMode = GambatteDisplayMode::Integer;
+      m_displaySize = GambatteDisplaySize::Auto;
     }
   } else {
-    m_displayMode = GambatteDisplayMode::Display;
-    m_displaySize = GambatteDisplaySize::_4_3;
+    m_displayMode = GambatteDisplayMode::Integer;
+    m_displaySize = GambatteDisplaySize::Auto;
   }
   ApplyScalingSettings(false);
 }

@@ -220,6 +220,8 @@ private:
 
     bool m_inputState[4][16] = {};
     int16_t m_analogState[4][2][2] = {};
+    int m_allocTexWidth = 0;
+    int m_allocTexHeight = 0;
 
     SDL_Window *m_window = nullptr;
     EGLDisplay m_eglDisplay = EGL_NO_DISPLAY;

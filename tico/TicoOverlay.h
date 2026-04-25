@@ -109,8 +109,8 @@ private:
     int m_settingsSelection = 0;
     int m_shaderSelection = 0; // 0=None, 1=LCD, 2=Scale2x
     
-    GambatteDisplayMode m_displayMode = GambatteDisplayMode::Display;
-    GambatteDisplaySize m_displaySize = GambatteDisplaySize::_4_3;
+    GambatteDisplayMode m_displayMode = GambatteDisplayMode::Integer;
+    GambatteDisplaySize m_displaySize = GambatteDisplaySize::Auto;
 
     void LoadCoreSettings();
     void SaveCoreSettings();
