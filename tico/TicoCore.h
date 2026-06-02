@@ -76,9 +76,6 @@ public:
     bool GetVariable(const char *key, const char **value);
 
 
-    /// @brief Enable or disable rewinding
-    void SetRewinding(bool rewinding) { m_isRewinding = rewinding; }
-
     /// @brief OSD notification accessors
     const std::string& GetOSDMessage() const { return m_osdMessage; }
     int GetOSDFrames() const { return m_osdFrames; }
@@ -178,10 +175,6 @@ private:
 
     bool m_initialized = false;
     bool m_gameLoaded = false;
-    // --- Rewind State ---
-    bool m_isRewinding = false;
-    std::vector<std::vector<uint8_t>> m_rewindBuffer;
-    int m_rewindFrameCounter = 0;
     bool m_paused = false;
     bool m_hwRender = false;
     bool m_variablesUpdated = true;
