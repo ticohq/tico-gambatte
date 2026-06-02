@@ -247,7 +247,7 @@ NACPTOOL="$DEVKITPRO/tools/bin/nacptool"
 
 # Create NACP
 NACP_FILE="$BUILD_DIR/gambatte.nacp"
-$NACPTOOL --create "tico Gambatte" "ticoverse.com" "1.0.1" "$NACP_FILE"
+$NACPTOOL --create "tico Gambatte" "ticoverse.com" "1.0.3" "$NACP_FILE"
 
 # Convert ELF to NRO with romfs
 ROMFS_DIR="$BUILD_DIR/romfs"

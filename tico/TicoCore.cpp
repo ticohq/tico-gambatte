@@ -945,40 +945,8 @@ void TicoCore::RunFrame()
     if (!m_gameLoaded || m_paused)
         return;
 
-    if (m_isRewinding)
-    {
-        if (!m_rewindBuffer.empty())
-        {
-            auto& state = m_rewindBuffer.back();
-            retro_unserialize(state.data(), state.size());
-            m_rewindBuffer.pop_back();
-        }
-        retro_run();
-    }
-    else
-    {
-        m_rewindFrameCounter++;
-        if (m_rewindFrameCounter >= 2) // Save state every 2 frames for smoother rewind
-        {
-            m_rewindFrameCounter = 0;
-            size_t size = retro_serialize_size();
-            if (size > 0 && size < 1024 * 1024 * 10) // Sanity check to not allocate gigabytes (Gambatte states are small)
-            {
-                std::vector<uint8_t> state(size);
-                if (retro_serialize(state.data(), size))
-                {
-                    m_rewindBuffer.push_back(std::move(state));
-                    // Keep up to 5 seconds of rewind history (60fps / 2 * 5 = 150 states)
-                    if (m_rewindBuffer.size() > 150)
-                    {
-                        m_rewindBuffer.erase(m_rewindBuffer.begin());
-                    }
-                }
-            }
-        }
-        retro_run();
-    }
-    
+    retro_run();
+
     // RetroAchievements frame tick
     if (m_rcClient) {
         rc_client_do_frame(m_rcClient);

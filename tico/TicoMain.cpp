@@ -396,8 +396,8 @@ bool InitWindow()
         return false;
     }
 
-    eglSwapInterval(g_eglDisplay, 0);
-    LOG_INFO("EGL", "VSync disabled (eglSwapInterval=0), using manual frame pacing");
+    eglSwapInterval(g_eglDisplay, 1);
+    LOG_INFO("EGL", "VSync enabled (eglSwapInterval=1) — swap is the sole frame governor");
 
     LOG_INFO("HOME", "OpenGL %s initialized", glGetString(GL_VERSION));
 
@@ -750,7 +750,6 @@ void HandleInput()
 
             if (p == 0)
             {
-                g_core->SetRewinding(zl);
                 g_audio.SetFastForward(zr);
             }
 
@@ -1032,19 +1031,14 @@ int main(int argc, char *argv[])
 
     Uint32 lastTime = SDL_GetTicks();
 
-#ifdef __SWITCH__
-    // Manual frame pacing: 19.2 MHz system tick, target ~16.67ms per frame (60fps)
-    static constexpr uint64_t TICKS_PER_SECOND = 19200000ULL;
-    static constexpr uint64_t FRAME_TICKS = TICKS_PER_SECOND / 60; // ~320000 ticks
-    static constexpr int64_t FRAME_NS = 16666667LL; // 16.67ms in nanoseconds
-    uint64_t frameStart = svcGetSystemTick();
-#endif
+    // Frame pacing is handled entirely by vsync (eglSwapBuffers with
+    // eglSwapInterval=1). Audio is non-blocking, so the swap is the only governor.
+    // While fast-forwarding we drop to swapInterval=0 so the loop is uncapped.
+    bool lastFastForward = false;
 
     while (g_running)
     {
 #ifdef __SWITCH__
-        frameStart = svcGetSystemTick();
-
         if (!appletMainLoop())
         {
             LOG_INFO("HOME", "appletMainLoop returned false, exiting main loop");
@@ -1052,6 +1046,18 @@ int main(int argc, char *argv[])
             break;
         }
 #endif
+
+        bool fastForward = g_audio.IsFastForwarding();
+        if (fastForward != lastFastForward)
+        {
+            int interval = fastForward ? 0 : 1;
+#ifdef __SWITCH__
+            eglSwapInterval(g_eglDisplay, interval);
+#else
+            SDL_GL_SetSwapInterval(interval);
+#endif
+            lastFastForward = fastForward;
+        }
 
         float deltaTime = (SDL_GetTicks() - lastTime) / 1000.0f;
         lastTime = SDL_GetTicks();
