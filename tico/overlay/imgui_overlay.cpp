@@ -9,7 +9,6 @@
 #include <string>
 #include <vector>
 
-#include "glad.h"
 #include "imgui.h"
 #define STB_IMAGE_IMPLEMENTATION
 #include "deps/stb/stb_image.h"
@@ -19,6 +18,7 @@
 #endif
 
 #include "TicoLogger.h"
+#include "TicoVulkan.h"
 #include "overlay/ra_alerts.h"
 #include "overlay/tico_config.h"
 
@@ -47,26 +47,20 @@ bool s_visible = false;
 bool s_psm_initialized = false;
 OverlayUI::NavInput s_nav{};
 OverlayUI::Action s_action = OverlayUI::Action::None;
-GLuint s_avatar_texture = 0;
-GLuint s_border_texture = 0;
+ImTextureID s_avatar_texture = ImTextureID_Invalid;
+ImTextureID s_border_texture = ImTextureID_Invalid;
 
-// Uploads an RGBA image decoded by stb_image and frees it. Returns the GL
-// texture, or 0 when there was no image.
-GLuint Upload(unsigned char* rgba, int width, int height, const char* source) {
+// Uploads an RGBA image decoded by stb_image and frees it. Returns the
+// texture, or ImTextureID_Invalid when there was no image.
+ImTextureID Upload(unsigned char* rgba, int width, int height, const char* source) {
     if (!rgba) {
-        return 0;
+        return ImTextureID_Invalid;
     }
-    GLuint texture = 0;
-    glGenTextures(1, &texture);
-    glBindTexture(GL_TEXTURE_2D, texture);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, width, height, 0, GL_RGBA, GL_UNSIGNED_BYTE, rgba);
-    glBindTexture(GL_TEXTURE_2D, 0);
+    const ImTextureID texture = TicoVulkan::CreateTextureRGBA(rgba, width, height);
     stbi_image_free(rgba);
-    LOG_INFO("OVERLAY", "loaded %s (%dx%d)", source, width, height);
+    if (texture != ImTextureID_Invalid) {
+        LOG_INFO("OVERLAY", "loaded %s (%dx%d)", source, width, height);
+    }
     return texture;
 }
 
@@ -85,10 +79,10 @@ void LoadBorder() {
     int channels = 0;
     s_border_texture =
         Upload(stbi_load(path.c_str(), &width, &height, &channels, 4), width, height, path.c_str());
-    if (!s_border_texture) {
+    if (s_border_texture == ImTextureID_Invalid) {
         LOG_WARN("OVERLAY", "no selection border strip at %s", path.c_str());
     }
-    OverlayUI::SetBorderTextureId(s_border_texture);
+    OverlayUI::SetBorderTextureId(static_cast<unsigned long long>(s_border_texture));
 }
 
 #ifdef __SWITCH__
@@ -136,7 +130,7 @@ bool LoadAvatarFromAccount() {
         accountProfileClose(&profile);
     }
     accountExit();
-    return s_avatar_texture != 0;
+    return s_avatar_texture != ImTextureID_Invalid;
 }
 #endif
 
@@ -146,16 +140,16 @@ void LoadAvatar() {
         int height = 0;
         int channels = 0;
         s_avatar_texture = Upload(stbi_load(path, &width, &height, &channels, 4), width, height, path);
-        if (s_avatar_texture) {
+        if (s_avatar_texture != ImTextureID_Invalid) {
             break;
         }
     }
 #ifdef __SWITCH__
-    if (!s_avatar_texture && !LoadAvatarFromAccount()) {
+    if (s_avatar_texture == ImTextureID_Invalid && !LoadAvatarFromAccount()) {
         LOG_INFO("OVERLAY", "no avatar image found");
     }
 #endif
-    OverlayUI::SetAvatarTextureId(s_avatar_texture);
+    OverlayUI::SetAvatarTextureId(static_cast<unsigned long long>(s_avatar_texture));
 }
 
 } // namespace
@@ -182,10 +176,10 @@ void Shutdown() {
     if (!s_initialized) {
         return;
     }
-    for (GLuint* texture : {&s_avatar_texture, &s_border_texture}) {
-        if (*texture) {
-            glDeleteTextures(1, texture);
-            *texture = 0;
+    for (ImTextureID* texture : {&s_avatar_texture, &s_border_texture}) {
+        if (*texture != ImTextureID_Invalid) {
+            TicoVulkan::DestroyTexture(*texture);
+            *texture = ImTextureID_Invalid;
         }
     }
     OverlayUI::SetAvatarTextureId(0);

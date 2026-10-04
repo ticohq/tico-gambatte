@@ -10,8 +10,8 @@ class TicoCore;
 
 namespace SwitchFrontend::ImGuiOverlay {
 
-// Loads the avatar and the selection border as OpenGL textures. Call once the
-// GL context and the ImGui context exist.
+// Loads the avatar and the selection border as Vulkan textures. Call once
+// TicoVulkan and the ImGui context are up.
 bool Init();
 void Shutdown();
 

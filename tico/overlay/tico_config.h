@@ -30,6 +30,11 @@ void SetConfigValue(const std::string& key, const std::string& value);
 // Writes the current option set back to the writable config path as JSON.
 bool SaveConfig();
 
+// A structured value (an object or array) as JSON text, empty when absent, and
+// its replacement (persisted by SaveConfig). Scalars use Get/SetConfigValue.
+std::string GetConfigJson(std::string_view key);
+void SetConfigJson(const std::string& key, const std::string& json_text);
+
 // Hands every catalogued core option (its stored value, or its default) to
 // `apply`, keyed by its libretro variable name. Options without the core's
 // gambatte_ prefix are the overlay's own and are skipped.

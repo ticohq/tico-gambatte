@@ -1,9 +1,10 @@
 /// @file TicoCore.cpp
 /// @brief Simplified libretro frontend for gambatte with tico overlay
-/// HW render via GLSM, save data uses native Gambatte formats with .srm fallback
+/// Software-rendered core: frames go to TicoShaderChain, saves use native
+/// Gambatte formats with a .srm fallback
 
 #include "TicoCore.h"
-#include "TicoShaders.h"
+#include "TicoVulkan.h"
 #include "TicoConfig.h"
 #include <algorithm>
 #include <json.hpp>
@@ -30,16 +31,12 @@
 
 
 #ifdef __SWITCH__
-#include <glad/glad.h>
 #include <switch.h>
 
 /// @brief Switch vibration handles and state
 static HidVibrationDeviceHandle s_vibrationHandles[5][2] = {};
 static HidVibrationValue s_currentVibration[5][2] = {};
 static bool s_vibrationInitialized = false;
-
-#else
-#include <glad/glad.h>
 #endif
 
 
@@ -161,7 +158,6 @@ extern "C"
 static TicoCore *s_instance = nullptr;
 
 // HW render callback storage
-static retro_hw_render_callback s_hwRenderCallback = {};
 
 //==============================================================================
 // RetroAchievements Callbacks
@@ -465,15 +461,13 @@ TicoCore::TicoCore()
 
 TicoCore::~TicoCore()
 {
-    tico_debug_log("~TicoCore: destroying (gameLoaded=%d, initialized=%d, hwRender=%d)",
-             m_gameLoaded, m_initialized, m_hwRender);
+    tico_debug_log("~TicoCore: destroying (gameLoaded=%d, initialized=%d)",
+             m_gameLoaded, m_initialized);
 
     UnloadGame();
-    DestroyShaderPipeline();
 
     if (m_initialized)
     {
-        glFinish(); // drain any pending GPU commands before CoreShutdown
         tico_debug_log("Calling retro_deinit...");
         retro_deinit();
         tico_debug_log("retro_deinit done");
@@ -676,96 +670,6 @@ bool TicoCore::Init()
     return true;
 }
 
-void TicoCore::SetHWRenderContext(SDL_Window *window, EGLContext mainCtx, EGLContext hwCtx)
-{
-    m_window = window;
-    m_mainContext = mainCtx;
-    m_hwContext = hwCtx;
-    m_eglDisplay = eglGetCurrentDisplay();
-    m_eglSurface = eglGetCurrentSurface(EGL_DRAW);
-}
-
-bool TicoCore::InitEGLDualContext()
-{
-    m_eglDisplay = eglGetCurrentDisplay();
-    EGLContext currentCtx = eglGetCurrentContext();
-
-    if (m_eglDisplay == EGL_NO_DISPLAY || currentCtx == EGL_NO_CONTEXT)
-    {
-        tico_debug_log("ERROR: Failed to get current EGL context");
-        return false;
-    }
-
-    m_mainContext = currentCtx;
-    m_eglSurface = eglGetCurrentSurface(EGL_DRAW);
-    m_hwContext = m_mainContext; // Single context mode
-
-    int fboW = m_fboWidth > 0 ? m_fboWidth : m_frameWidth;
-    int fboH = m_fboHeight > 0 ? m_fboHeight : m_frameHeight;
-
-    // Create HW render texture
-    glGenTextures(1, &m_frameTexture);
-    glBindTexture(GL_TEXTURE_2D, m_frameTexture);
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, fboW, fboH, 0,
-                 GL_RGB, GL_UNSIGNED_BYTE, NULL);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-
-    // Create FBO
-    if (m_fbo == 0)
-    {
-        glGenFramebuffers(1, &m_fbo);
-        glGenRenderbuffers(1, &m_fbo_rbo);
-    }
-    glBindFramebuffer(GL_FRAMEBUFFER, m_fbo);
-
-    glBindRenderbuffer(GL_RENDERBUFFER, m_fbo_rbo);
-    glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH24_STENCIL8, fboW, fboH);
-    glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_STENCIL_ATTACHMENT, GL_RENDERBUFFER, m_fbo_rbo);
-
-    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, m_frameTexture, 0);
-
-    GLenum status = glCheckFramebufferStatus(GL_FRAMEBUFFER);
-    if (status != GL_FRAMEBUFFER_COMPLETE)
-    {
-        tico_debug_log("ERROR: FBO incomplete: 0x%x", status);
-        glBindFramebuffer(GL_FRAMEBUFFER, 0);
-        return false;
-    }
-
-    glViewport(0, 0, fboW, fboH);
-    glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
-    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT | GL_STENCIL_BUFFER_BIT);
-
-    glBindFramebuffer(GL_FRAMEBUFFER, 0);
-
-    tico_debug_log("Created HW render texture: %u (%dx%d) FBO: %u",
-             m_frameTexture, fboW, fboH, m_fbo);
-
-    return true;
-}
-
-void TicoCore::BindHWContext(bool enable)
-{
-    (void)enable; // Single context mode - no-op
-}
-
-void TicoCore::DestroyHWRenderContext()
-{
-    if (!m_hwRender || !s_hwRenderCallback.context_destroy)
-        return;
-
-    tico_debug_log("Calling context_destroy...");
-    glFinish();
-    s_hwRenderCallback.context_destroy();
-    tico_debug_log("context_destroy done");
-
-    s_hwRenderCallback = {};
-    m_hwRender = false;
-}
-
 //==============================================================================
 // Game Loading
 //==============================================================================
@@ -849,38 +753,8 @@ bool TicoCore::LoadGame(const std::string &path)
     m_fps = avInfo.timing.fps > 0 ? avInfo.timing.fps : 60.0;
     m_sampleRate = avInfo.timing.sample_rate > 0 ? avInfo.timing.sample_rate : 44100.0;
 
-    m_fboWidth = m_frameWidth;
-    m_fboHeight = m_frameHeight;
-
     tico_debug_log("AV info: %dx%d @ %.2f fps, %.0f Hz, aspect %.3f",
              m_frameWidth, m_frameHeight, m_fps, m_sampleRate, m_aspectRatio);
-
-    // Set up FBO and trigger deferred context_reset
-    if (m_hwRender)
-    {
-        tico_debug_log("Initializing HW render context...");
-        if (InitEGLDualContext())
-        {
-            if (s_hwRenderCallback.context_reset)
-            {
-                tico_debug_log("Calling context_reset...");
-                s_hwRenderCallback.context_reset();
-                tico_debug_log("context_reset done");
-            }
-            else
-            {
-                tico_debug_log("WARNING: No context_reset callback!");
-            }
-        }
-        else
-        {
-            tico_debug_log("ERROR: InitEGLDualContext failed");
-        }
-    }
-    else
-    {
-        tico_debug_log("Software rendering mode (no HW render requested)");
-    }
 
     // Set controller
     tico_debug_log("Setting controller port devices...");
@@ -911,72 +785,8 @@ void TicoCore::UnloadGame()
     retro_unload_game();
     tico_debug_log("retro_unload_game done");
 
-    DestroyHWRenderContext();
-
     m_gameLoaded = false;
 
-    // Drain stale GL errors
-    while (glGetError() != GL_NO_ERROR) {}
-
-    // Delete FBO objects
-    tico_debug_log("Deleting TicoCore GL objects (tex=%u fbo=%u rbo=%u)",
-             m_frameTexture, m_fbo, m_fbo_rbo);
-
-    glBindFramebuffer(GL_FRAMEBUFFER, 0);
-
-    if (m_frameTexture != 0)
-    {
-        glDeleteTextures(1, &m_frameTexture);
-        m_frameTexture = 0;
-        m_allocTexWidth = 0;
-        m_allocTexHeight = 0;
-    }
-
-    if (m_fbo != 0)
-    {
-        glDeleteFramebuffers(1, &m_fbo);
-        m_fbo = 0;
-    }
-
-    if (m_fbo_rbo != 0)
-    {
-        glDeleteRenderbuffers(1, &m_fbo_rbo);
-        m_fbo_rbo = 0;
-    }
-
-    // Unbind all GL state so the context is clean for the next user
-    glBindVertexArray(0);
-    glBindBuffer(GL_ARRAY_BUFFER, 0);
-    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, 0);
-    glBindBuffer(GL_UNIFORM_BUFFER, 0);
-    glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
-    glBindRenderbuffer(GL_RENDERBUFFER, 0);
-    glUseProgram(0);
-    for (int i = 15; i >= 0; --i)
-    {
-        glActiveTexture(GL_TEXTURE0 + i);
-        glBindTexture(GL_TEXTURE_2D, 0);
-        glBindTexture(GL_TEXTURE_CUBE_MAP, 0);
-    }
-    glActiveTexture(GL_TEXTURE0);
-
-    // Reset GL state
-    glDisable(GL_DEPTH_TEST);
-    glDisable(GL_BLEND);
-    glDisable(GL_CULL_FACE);
-    glDisable(GL_STENCIL_TEST);
-    glDisable(GL_SCISSOR_TEST);
-    glDepthMask(GL_TRUE);
-    glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
-
-    // Drain all pending GPU work
-    glFlush();
-    glFinish();
-
-    // Clear any accumulated errors
-    while (glGetError() != GL_NO_ERROR) {}
-
-    tico_debug_log("UnloadGame GL cleanup complete");
 }
 
 //==============================================================================
@@ -1005,46 +815,6 @@ void TicoCore::RunFrame()
         cbs = std::move(m_raPendingCallbacks);
     }
     for(auto& cb : cbs) cb();
-
-    // Unbind core's FBO so subsequent rendering targets the default framebuffer
-    glBindFramebuffer(GL_FRAMEBUFFER, 0);
-}
-
-void TicoCore::ResizeFBO(int width, int height)
-{
-    if (m_frameTexture == 0 || m_fbo == 0)
-        return;
-
-    tico_debug_log("ResizeFBO: %dx%d", width, height);
-
-    glBindTexture(GL_TEXTURE_2D, m_frameTexture);
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, width, height, 0,
-                 GL_RGB, GL_UNSIGNED_BYTE, NULL);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-
-    glBindRenderbuffer(GL_RENDERBUFFER, m_fbo_rbo);
-    glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH24_STENCIL8, width, height);
-
-    glBindFramebuffer(GL_FRAMEBUFFER, m_fbo);
-    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, m_frameTexture, 0);
-    glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_STENCIL_ATTACHMENT, GL_RENDERBUFFER, m_fbo_rbo);
-
-    GLenum status = glCheckFramebufferStatus(GL_FRAMEBUFFER);
-    if (status != GL_FRAMEBUFFER_COMPLETE)
-    {
-        tico_debug_log("ERROR: ResizeFBO incomplete: 0x%x", status);
-    }
-    else
-    {
-        glViewport(0, 0, width, height);
-        glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
-        glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT | GL_STENCIL_BUFFER_BIT);
-    }
-
-    glBindFramebuffer(GL_FRAMEBUFFER, 0);
 }
 
 void TicoCore::Reset()
@@ -1093,24 +863,15 @@ void TicoCore::SaveState(const std::string &path)
     if (!m_gameLoaded)
         return;
 
-    BindHWContext(true);
-    glFinish();
-    glBindFramebuffer(GL_FRAMEBUFFER, 0);
-
     size_t size = retro_serialize_size();
     if (size == 0)
     {
         tico_debug_log("SaveState: size 0");
-        BindHWContext(false);
         return;
     }
 
     std::vector<uint8_t> data(size);
     bool success = retro_serialize(data.data(), size);
-
-    glBindFramebuffer(GL_FRAMEBUFFER, 0);
-    glFinish();
-    BindHWContext(false);
 
     if (success)
     {
@@ -1162,10 +923,6 @@ void TicoCore::LoadState(const std::string &path)
     }
     fclose(fp);
 
-    BindHWContext(true);
-    glFinish();
-    glBindFramebuffer(GL_FRAMEBUFFER, 0);
-
     // Flush audio
     if (m_audioFlushCallback)
     {
@@ -1174,10 +931,6 @@ void TicoCore::LoadState(const std::string &path)
     }
 
     bool success = retro_unserialize(data.data(), fileSize);
-
-    glBindFramebuffer(GL_FRAMEBUFFER, 0);
-    glFinish();
-    BindHWContext(false);
 
     if (success)
     {
@@ -1369,27 +1122,8 @@ bool TicoCore::HandleEnvironment(unsigned cmd, void *data)
     }
 
     case RETRO_ENVIRONMENT_SET_HW_RENDER:
-    {
-        auto *hw = (struct retro_hw_render_callback *)data;
-        
-        s_hwRenderCallback = *hw;
-        m_hwRender = true;
-
-        hw->get_current_framebuffer = []() -> uintptr_t
-        {
-            if (s_instance)
-                return s_instance->m_fbo;
-            return 0;
-        };
-        hw->get_proc_address = [](const char *sym) -> retro_proc_address_t
-        {
-            return (retro_proc_address_t)eglGetProcAddress(sym);
-        };
-
-        tico_debug_log("ENV: SET_HW_RENDER accepted - context_type=%d, version=%d.%d",
-                 hw->context_type, hw->version_major, hw->version_minor);
-        return true;
-    }
+        // Software rendering only: frames go through TicoShaderChain.
+        return false;
 
     case RETRO_ENVIRONMENT_SET_MEMORY_MAPS:
     {
@@ -1442,16 +1176,7 @@ bool TicoCore::HandleEnvironment(unsigned cmd, void *data)
             m_aspectRatio = avInfo->geometry.aspect_ratio;
         }
         m_fps = avInfo->timing.fps > 0 ? avInfo->timing.fps : 60.0;
-        int newMaxW = avInfo->geometry.max_width > 0 ? (int)avInfo->geometry.max_width : m_frameWidth;
-        int newMaxH = avInfo->geometry.max_height > 0 ? (int)avInfo->geometry.max_height : m_frameHeight;
-        if (newMaxW != m_fboWidth || newMaxH != m_fboHeight)
-        {
-            m_fboWidth = newMaxW;
-            m_fboHeight = newMaxH;
-            ResizeFBO(m_fboWidth, m_fboHeight);
-        }
-        tico_debug_log("ENV: SET_SYSTEM_AV_INFO: base %dx%d, FBO %dx%d @ %.2f fps",
-                 m_frameWidth, m_frameHeight, m_fboWidth, m_fboHeight, m_fps);
+        tico_debug_log("ENV: SET_SYSTEM_AV_INFO: %dx%d @ %.2f fps", m_frameWidth, m_frameHeight, m_fps);
         return true;
     }
 
@@ -1463,14 +1188,6 @@ bool TicoCore::HandleEnvironment(unsigned cmd, void *data)
         if (geom->aspect_ratio > 0)
         {
             m_aspectRatio = geom->aspect_ratio;
-        }
-        int newMaxW = geom->max_width > 0 ? (int)geom->max_width : m_frameWidth;
-        int newMaxH = geom->max_height > 0 ? (int)geom->max_height : m_frameHeight;
-        if (newMaxW != m_fboWidth || newMaxH != m_fboHeight)
-        {
-            m_fboWidth = newMaxW;
-            m_fboHeight = newMaxH;
-            ResizeFBO(m_fboWidth, m_fboHeight);
         }
         return true;
     }
@@ -1590,78 +1307,13 @@ bool TicoCore::HandleEnvironment(unsigned cmd, void *data)
 void TicoCore::HandleVideoRefresh(const void *data, unsigned width,
                                   unsigned height, size_t pitch)
 {
-    if (!data && !m_hwRender)
+    // NULL data is a frame dupe: the chain keeps showing the previous frame.
+    if (!data)
         return;
-
-    // Resize FBO if dimensions changed
-    if ((int)width != m_frameWidth || (int)height != m_frameHeight)
-    {
-        m_frameWidth = width;
-        m_frameHeight = height;
-        m_fboWidth = width;
-        m_fboHeight = height;
-
-        if (m_hwRender && m_frameTexture != 0)
-        {
-            ResizeFBO(width, height);
-        }
-    }
-
-    // For HW render, the core renders directly to our FBO
-    // For SW render, upload pixel data
-    if (!m_hwRender && data)
-    {
-        if (m_frameTexture == 0)
-        {
-            glGenTextures(1, &m_frameTexture);
-        }
-
-        glBindTexture(GL_TEXTURE_2D, m_frameTexture);
-
-        GLint format = GL_RGBA;
-        GLint type = GL_UNSIGNED_BYTE;
-        int bpp = 4;
-
-        if (m_pixelFormat == RETRO_PIXEL_FORMAT_0RGB1555) {
-            format = GL_BGRA;
-            type = GL_UNSIGNED_SHORT_1_5_5_5_REV;
-            bpp = 2;
-        } else if (m_pixelFormat == RETRO_PIXEL_FORMAT_XRGB8888) {
-            format = GL_BGRA;
-            type = GL_UNSIGNED_INT_8_8_8_8_REV;
-            bpp = 4;
-        } else if (m_pixelFormat == RETRO_PIXEL_FORMAT_RGB565) {
-            format = GL_RGB;
-            type = GL_UNSIGNED_SHORT_5_6_5;
-            bpp = 2;
-        }
-
-        glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
-        glPixelStorei(GL_UNPACK_ROW_LENGTH, pitch / bpp);
-        if (m_allocTexWidth != (int)width || m_allocTexHeight != (int)height)
-        {
-            glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, width, height, 0,
-                         format, type, data);
-            m_allocTexWidth = width;
-            m_allocTexHeight = height;
-        }
-        else
-        {
-            glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, width, height,
-                            format, type, data);
-        }
-        glPixelStorei(GL_UNPACK_ROW_LENGTH, 0);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-    }
-
-    // Apply post-processing shader if pipeline is ready
-    if (m_shaderPipelineReady && m_frameTexture != 0 && m_activeShader != ShaderType::None)
-    {
-        ApplyShader(m_frameWidth, m_frameHeight);
-    }
+    m_frameWidth = width;
+    m_frameHeight = height;
+    if (m_videoCallback)
+        m_videoCallback(data, width, height, pitch, m_pixelFormat);
 }
 
 int16_t TicoCore::HandleInputState(unsigned port, unsigned device,
@@ -1912,11 +1564,11 @@ void TicoCore::PushRANotification(const std::string& title, const std::string& d
         m_raNotifications.erase(m_raNotifications.begin());
     }
     m_raNotifications.push_back(std::move(n));
-    tico_debug_log("RA: Notification pushed: %s - %s (badge: %s, tex: %u)",
-        title.c_str(), desc.c_str(), badge.c_str(), n.textureId);
+    tico_debug_log("RA: Notification pushed: %s - %s (badge: %s)",
+        title.c_str(), desc.c_str(), badge.c_str());
 }
 
-unsigned int TicoCore::GetRABadgeTexture(const std::string& badge_name)
+ImTextureID TicoCore::GetRABadgeTexture(const std::string& badge_name)
 {
     // Check cache first
     auto it = m_raBadgeCache.find(badge_name);
@@ -1927,18 +1579,12 @@ unsigned int TicoCore::GetRABadgeTexture(const std::string& badge_name)
     int w, h, ch;
     unsigned char* data = stbi_load(path.c_str(), &w, &h, &ch, 4);
     if (data) {
-        unsigned int tex = 0;
-        glGenTextures(1, &tex);
-        glBindTexture(GL_TEXTURE_2D, tex);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, w, h, 0, GL_RGBA, GL_UNSIGNED_BYTE, data);
-        glBindTexture(GL_TEXTURE_2D, 0);
+        ImTextureID tex = TicoVulkan::CreateTextureRGBA(data, w, h);
         stbi_image_free(data);
         m_raBadgeCache[badge_name] = tex;
         return tex;
     }
-    return 0;
+    return ImTextureID_Invalid;
 }
 
 void TicoCore::DownloadAndCacheBadge(const std::string& badge_name)
@@ -2064,224 +1710,8 @@ void TicoCore::ProcessPendingBadgeUploads()
         int w, h, ch;
         unsigned char* pixels = stbi_load_from_memory(data.data(), (int)data.size(), &w, &h, &ch, 4);
         if (pixels) {
-            unsigned int tex = 0;
-            glGenTextures(1, &tex);
-            glBindTexture(GL_TEXTURE_2D, tex);
-            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-            glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, w, h, 0, GL_RGBA, GL_UNSIGNED_BYTE, pixels);
-            glBindTexture(GL_TEXTURE_2D, 0);
+            m_raBadgeCache[name] = TicoVulkan::CreateTextureRGBA(pixels, w, h);
             stbi_image_free(pixels);
-            m_raBadgeCache[name] = tex;
         }
     }
-}
-
-//==============================================================================
-// Shader Pipeline
-//==============================================================================
-
-// Shader sources are now in TicoShaders.cpp
-
-unsigned int TicoCore::CompileShaderProgram(const char *vsSrc, const char *fsSrc)
-{
-    GLuint vs = glCreateShader(GL_VERTEX_SHADER);
-    glShaderSource(vs, 1, &vsSrc, NULL);
-    glCompileShader(vs);
-
-    GLint success = 0;
-    glGetShaderiv(vs, GL_COMPILE_STATUS, &success);
-    if (!success) {
-        char log[512];
-        glGetShaderInfoLog(vs, 512, NULL, log);
-        tico_debug_log("Shader VS compile error: %s", log);
-    }
-
-    GLuint fs = glCreateShader(GL_FRAGMENT_SHADER);
-    glShaderSource(fs, 1, &fsSrc, NULL);
-    glCompileShader(fs);
-
-    glGetShaderiv(fs, GL_COMPILE_STATUS, &success);
-    if (!success) {
-        char log[512];
-        glGetShaderInfoLog(fs, 512, NULL, log);
-        tico_debug_log("Shader FS compile error: %s", log);
-    }
-
-    GLuint prog = glCreateProgram();
-    glAttachShader(prog, vs);
-    glAttachShader(prog, fs);
-    glLinkProgram(prog);
-
-    glGetProgramiv(prog, GL_LINK_STATUS, &success);
-    if (!success) {
-        char log[512];
-        glGetProgramInfoLog(prog, 512, NULL, log);
-        tico_debug_log("Shader link error: %s", log);
-    }
-
-    glDeleteShader(vs);
-    glDeleteShader(fs);
-    return prog;
-}
-
-void TicoCore::InitShaderPipeline()
-{
-    if (m_shaderPipelineReady) return;
-
-    // Create fullscreen quad
-    float quadVerts[] = {
-        -1.0f,  1.0f,  0.0f, 1.0f,
-         1.0f,  1.0f,  1.0f, 1.0f,
-         1.0f, -1.0f,  1.0f, 0.0f,
-        -1.0f, -1.0f,  0.0f, 0.0f
-    };
-
-    glGenVertexArrays(1, &m_shaderVAO);
-    glGenBuffers(1, &m_shaderVBO);
-    glBindVertexArray(m_shaderVAO);
-    glBindBuffer(GL_ARRAY_BUFFER, m_shaderVBO);
-    glBufferData(GL_ARRAY_BUFFER, sizeof(quadVerts), quadVerts, GL_STATIC_DRAW);
-
-    glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 4 * sizeof(float), (void*)0);
-    glEnableVertexAttribArray(0);
-    glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, 4 * sizeof(float), (void*)(2 * sizeof(float)));
-    glEnableVertexAttribArray(1);
-
-    glBindBuffer(GL_ARRAY_BUFFER, 0);
-    glBindVertexArray(0);
-
-    // Create output FBO + texture (will be sized on first use)
-    glGenFramebuffers(1, &m_shaderFBO);
-    glGenTextures(1, &m_shaderTexture);
-
-    // Compile default passthrough shader
-    m_shaderProgram = CompileShaderProgram(
-        GetShaderVertexSource(),
-        GetShaderFragmentSource(ShaderType::None));
-
-    m_shaderPipelineReady = true;
-    tico_debug_log("Shader pipeline initialized");
-}
-
-void TicoCore::DestroyShaderPipeline()
-{
-    if (m_shaderProgram) { glDeleteProgram(m_shaderProgram); m_shaderProgram = 0; }
-    if (m_shaderFBO) { glDeleteFramebuffers(1, &m_shaderFBO); m_shaderFBO = 0; }
-    if (m_shaderTexture) { glDeleteTextures(1, &m_shaderTexture); m_shaderTexture = 0; }
-    if (m_shaderVAO) { glDeleteVertexArrays(1, &m_shaderVAO); m_shaderVAO = 0; }
-    if (m_shaderVBO) { glDeleteBuffers(1, &m_shaderVBO); m_shaderVBO = 0; }
-    m_shaderPipelineReady = false;
-    m_shaderTexWidth = 0;
-    m_shaderTexHeight = 0;
-}
-
-void TicoCore::SetShader(ShaderType type)
-{
-    if (type == m_activeShader) return;
-    m_activeShader = type;
-
-    if (!m_shaderPipelineReady) return;
-
-    // Recompile shader program
-    if (m_shaderProgram) {
-        glDeleteProgram(m_shaderProgram);
-    }
-
-    m_shaderProgram = CompileShaderProgram(
-        GetShaderVertexSource(),
-        GetShaderFragmentSource(type));
-
-    // If None, clear the shader texture so GetFrameTextureID returns raw
-    if (type == ShaderType::None) {
-        m_shaderTexWidth = 0;
-        m_shaderTexHeight = 0;
-    }
-
-    const char *names[] = {"None", "LCD", "xBRZ", "Eagle", "Dot", "LCD Grid V2"};
-    int idx = (int)type;
-    if (idx >= 0 && idx < 6) {
-        tico_debug_log("Shader set to: %s", names[idx]);
-    }
-}
-
-void TicoCore::ApplyShader(int srcWidth, int srcHeight)
-{
-    if (!m_shaderPipelineReady || m_shaderProgram == 0 || m_frameTexture == 0)
-        return;
-
-    // Output resolution depends on shader type
-    int outW = srcWidth;
-    int outH = srcHeight;
-    if (m_activeShader == ShaderType::xBRZ || m_activeShader == ShaderType::Eagle) {
-        outW = srcWidth * 4;
-        outH = srcHeight * 4;
-    } else if (m_activeShader == ShaderType::LCD ||
-               m_activeShader == ShaderType::Dot ||
-               m_activeShader == ShaderType::LcdGridV2) {
-        outW = 1280;
-        outH = 720;
-    }
-
-    // Resize output texture if needed
-    if (m_shaderTexWidth != outW || m_shaderTexHeight != outH)
-    {
-        glBindTexture(GL_TEXTURE_2D, m_shaderTexture);
-        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, outW, outH, 0,
-                     GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-        glBindTexture(GL_TEXTURE_2D, 0);
-
-        glBindFramebuffer(GL_FRAMEBUFFER, m_shaderFBO);
-        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
-                               GL_TEXTURE_2D, m_shaderTexture, 0);
-        glBindFramebuffer(GL_FRAMEBUFFER, 0);
-
-        m_shaderTexWidth = outW;
-        m_shaderTexHeight = outH;
-    }
-
-    // Save current GL state
-    GLint prevFBO = 0, prevViewport[4];
-    glGetIntegerv(GL_FRAMEBUFFER_BINDING, &prevFBO);
-    glGetIntegerv(GL_VIEWPORT, prevViewport);
-
-    // Render to shader FBO
-    glBindFramebuffer(GL_FRAMEBUFFER, m_shaderFBO);
-    glViewport(0, 0, outW, outH);
-    glClear(GL_COLOR_BUFFER_BIT);
-
-    glUseProgram(m_shaderProgram);
-
-    // Set uniforms
-    GLint locSource = glGetUniformLocation(m_shaderProgram, "Source");
-    GLint locTexSize = glGetUniformLocation(m_shaderProgram, "TextureSize");
-    GLint locOutSize = glGetUniformLocation(m_shaderProgram, "OutputSize");
-    if (locSource >= 0) glUniform1i(locSource, 0);
-    if (locTexSize >= 0) glUniform2f(locTexSize, (float)srcWidth, (float)srcHeight);
-    if (locOutSize >= 0) glUniform2f(locOutSize, (float)outW, (float)outH);
-
-    // Bind source game texture
-    glActiveTexture(GL_TEXTURE0);
-    glBindTexture(GL_TEXTURE_2D, m_frameTexture);
-
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
-
-    // Draw fullscreen quad
-    glBindVertexArray(m_shaderVAO);
-    glDrawArrays(GL_TRIANGLE_FAN, 0, 4);
-    glBindVertexArray(0);
-
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
-
-    glUseProgram(0);
-
-    // Restore previous GL state
-    glBindFramebuffer(GL_FRAMEBUFFER, prevFBO);
-    glViewport(prevViewport[0], prevViewport[1], prevViewport[2], prevViewport[3]);
 }

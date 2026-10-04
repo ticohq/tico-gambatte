@@ -16,63 +16,23 @@ ROOT_DIR="$(cd "$(dirname "$0")" && pwd)"
 BUILD_DIR="$ROOT_DIR/build_tico"
 TICO_DIR="$ROOT_DIR/tico"
 
-# Prefer a locally built Mesa tree when present so the NRO doesn't keep
-# embedding the older portlibs OpenGL stack.
-MESA_SOURCE_ROOT="${MESA_SOURCE_ROOT:-}"
-MESA_BUILD_ROOT=""
-
-if [ -z "$MESA_SOURCE_ROOT" ]; then
-    for candidate in "$HOME/mesa-clean" "/mesa-clean"; do
-        if [ -d "$candidate" ]; then
-            MESA_SOURCE_ROOT="$candidate"
-            break
-        fi
-    done
+# Rendering is Vulkan on Mesa's NVK, linked statically (a loaderless
+# libvulkan.a), as in tico-snes9x and tico-flycast. Point MESA_NVK_DIR at
+# builddir-switch of a mesa-switch tree; without one, the switch-dev image's
+# Horizon-native NVK in portlibs is used.
+MESA_NVK_DIR="${MESA_NVK_DIR:-/nvk-build}"
+NVK_ARCHIVE_SRC="$MESA_NVK_DIR/src/nouveau/vulkan/libvulkan.a"
+NVK_DEPS="-ldrm_nouveau -lexpat"
+if [ ! -f "$NVK_ARCHIVE_SRC" ]; then
+    NVK_ARCHIVE_SRC="$PORTLIBS/lib/libvulkan.a"
+    # no libdrm_nouveau in that build; see its vulkan.pc
+    NVK_DEPS="-lexpat"
 fi
-
-if [ -n "$MESA_SOURCE_ROOT" ]; then
-    if [ -f "$MESA_SOURCE_ROOT/build/src/egl/libEGL.a" ]; then
-        MESA_BUILD_ROOT="$MESA_SOURCE_ROOT/build"
-    elif [ -f "$MESA_SOURCE_ROOT/src/egl/libEGL.a" ]; then
-        MESA_BUILD_ROOT="$MESA_SOURCE_ROOT"
-    fi
+if [ ! -f "$NVK_ARCHIVE_SRC" ]; then
+    echo "Error: no NVK libvulkan.a (set MESA_NVK_DIR)"
+    exit 1
 fi
-
-USE_CUSTOM_MESA=0
-MESA_ARCHIVES=()
-
-if [ -n "$MESA_BUILD_ROOT" ]; then
-    REQUIRED_MESA_ARCHIVES=(
-        "$MESA_BUILD_ROOT/src/egl/libEGL.a"
-        "$MESA_BUILD_ROOT/src/mapi/shared-glapi/libglapi.a"
-        "$MESA_BUILD_ROOT/src/gallium/drivers/nouveau/libnouveau.a"
-        "$MESA_BUILD_ROOT/src/nouveau/codegen/libnouveau_codegen.a"
-        "$MESA_BUILD_ROOT/src/gallium/winsys/nouveau/switch/libnouveauwinsys.a"
-        "$MESA_BUILD_ROOT/libdrm_nouveau/lib/libdrm_nouveau.a"
-    )
-
-    MISSING_MESA_ARCHIVE=0
-    for archive in "${REQUIRED_MESA_ARCHIVES[@]}"; do
-        if [ ! -f "$archive" ]; then
-            MISSING_MESA_ARCHIVE=1
-            echo "Custom Mesa archive missing: $archive"
-        fi
-    done
-
-    if [ "$MISSING_MESA_ARCHIVE" -eq 0 ]; then
-        USE_CUSTOM_MESA=1
-        MESA_ARCHIVES=("${REQUIRED_MESA_ARCHIVES[@]}")
-        echo "Using custom Mesa build from: $MESA_BUILD_ROOT"
-    else
-        echo "Falling back to devkitPro portlibs Mesa."
-    fi
-else
-    if [ -n "$MESA_SOURCE_ROOT" ]; then
-        echo "Custom Mesa not found at $MESA_SOURCE_ROOT, using devkitPro portlibs Mesa."
-    else
-        echo "Custom Mesa not found, using devkitPro portlibs Mesa."
-    fi
-fi
+echo "NVK: $NVK_ARCHIVE_SRC"
 
 # ============================================================
 # Step 1: Build gambatte as a static library (.a)
@@ -91,6 +51,26 @@ fi
 echo "Static library built: $STATIC_LIB"
 
 # ============================================================
+# Step 1b: glslang (compiles slang shaders to SPIR-V at runtime)
+# ============================================================
+# Kept outside build_tico, which is wiped every run: glslang only needs
+# rebuilding when the submodule moves. Don't pass CMAKE_CXX_FLAGS here: it
+# replaces the toolchain's -mtp=soft, and glslang's thread_locals then read a
+# null thread pointer and crash on the first shader compile.
+GLSLANG_BUILD="$ROOT_DIR/build_glslang_nx"
+echo "--- Step 1b: Building glslang ---"
+cmake -S "$TICO_DIR/deps/glslang" -B "$GLSLANG_BUILD" -G Ninja \
+    -DCMAKE_TOOLCHAIN_FILE="$DEVKITPRO/cmake/Switch.cmake" -DCMAKE_BUILD_TYPE=Release \
+    -DENABLE_OPT=OFF -DENABLE_HLSL=OFF -DENABLE_GLSLANG_BINARIES=OFF -DGLSLANG_TESTS=OFF \
+    -DBUILD_EXTERNAL=OFF -DENABLE_SPVREMAPPER=OFF -DBUILD_SHARED_LIBS=OFF \
+    -DGLSLANG_ENABLE_INSTALL=OFF > /dev/null || exit 1
+cmake --build "$GLSLANG_BUILD" || exit 1
+GLSLANG_LIBS=(
+    "$GLSLANG_BUILD/glslang/libglslang.a"
+    "$GLSLANG_BUILD/glslang/libglslang-default-resource-limits.a"
+)
+
+# ============================================================
 # Step 2: Compile Tico overlay sources
 # ============================================================
 echo "--- Step 2: Compiling Tico overlay sources ---"
@@ -103,15 +83,13 @@ CXX="${DEVKITA64}/bin/aarch64-none-elf-g++"
 
 COMMON_FLAGS="-march=armv8-a+crc+crypto -mtune=cortex-a57 -mtp=soft -fPIE -O2 -g"
 COMMON_FLAGS="$COMMON_FLAGS -ffunction-sections -fdata-sections -DDISABLE_LOGGING -D__SWITCH__ -DHAVE_LIBNX"
-COMMON_FLAGS="$COMMON_FLAGS -DIMGUI_IMPL_OPENGL_LOADER_CUSTOM -include glad.h"
+COMMON_FLAGS="$COMMON_FLAGS -DVK_USE_PLATFORM_VI_NN"
 COMMON_FLAGS="$COMMON_FLAGS -I$LIBNX/include -I$PORTLIBS/include -I$PORTLIBS/include/SDL2"
 COMMON_FLAGS="$COMMON_FLAGS -I$TICO_DIR -I$TICO_DIR/deps"
+COMMON_FLAGS="$COMMON_FLAGS -I$TICO_DIR/deps/vulkan-headers"
+COMMON_FLAGS="$COMMON_FLAGS -I$TICO_DIR/deps/glslang -I$TICO_DIR/deps/SPIRV-Reflect"
 COMMON_FLAGS="$COMMON_FLAGS -I$ROOT_DIR/libgambatte/libretro-common/include"
 COMMON_FLAGS="$COMMON_FLAGS -I$ROOT_DIR/rcheevos/include -DRC_CLIENT_SUPPORTS_HASH"
-
-if [ "$USE_CUSTOM_MESA" -eq 1 ]; then
-    COMMON_FLAGS="$COMMON_FLAGS -I$MESA_SOURCE_ROOT/include -I$MESA_SOURCE_ROOT/libdrm_nouveau/include"
-fi
 
 CXXFLAGS="$COMMON_FLAGS -std=gnu++17 -fvisibility-inlines-hidden -fno-rtti -fno-exceptions"
 
@@ -119,7 +97,9 @@ CXXFLAGS="$COMMON_FLAGS -std=gnu++17 -fvisibility-inlines-hidden -fno-rtti -fno-
 TICO_SOURCES=(
     "$TICO_DIR/TicoMain.cpp"
     "$TICO_DIR/TicoCore.cpp"
-    "$TICO_DIR/TicoShaders.cpp"
+    "$TICO_DIR/TicoVulkan.cpp"
+    "$TICO_DIR/TicoShaderChain.cpp"
+    "$TICO_DIR/TicoSlang.cpp"
     "$TICO_DIR/TicoStubs.cpp"
     "$TICO_DIR/overlay/imgui_overlay.cpp"
     "$TICO_DIR/overlay/overlay_ui.cpp"
@@ -128,9 +108,9 @@ TICO_SOURCES=(
     "$TICO_DIR/overlay/translation_manager.cpp"
 )
 
-# glad.c (OpenGL loader)
+# NVK's libvulkan.a exports the vk* entry points, so no loader (volk) here.
 TICO_C_SOURCES=(
-    "$TICO_DIR/glad.c"
+    "$TICO_DIR/deps/SPIRV-Reflect/spirv_reflect.c"
 )
 
 # ImGui sources
@@ -141,8 +121,7 @@ IMGUI_SOURCES=(
     "$IMGUI_DIR/imgui_tables.cpp"
     "$IMGUI_DIR/imgui_widgets.cpp"
     "$IMGUI_DIR/imgui_demo.cpp"
-    "$IMGUI_DIR/backends/imgui_impl_sdl2.cpp"
-    "$IMGUI_DIR/backends/imgui_impl_opengl3.cpp"
+    "$IMGUI_DIR/backends/imgui_impl_vulkan.cpp"
 )
 
 IMGUI_FLAGS="-I$IMGUI_DIR -I$IMGUI_DIR/backends"
@@ -165,7 +144,7 @@ for src in "${TICO_SOURCES[@]}"; do
     TICO_OBJS+=("$obj")
 done
 
-# Compile glad.c
+# Compile SPIRV-Reflect
 for src in "${TICO_C_SOURCES[@]}"; do
     obj="$BUILD_DIR/$(basename ${src%.c}.o)"
     echo "  CC  $src"
@@ -218,14 +197,15 @@ LINK_FLAGS="$LINK_FLAGS -Wl,--gc-sections -Wl,-Map=$BUILD_DIR/gambatte_tico.map"
 LINK_LIBS="-L$PORTLIBS/lib -L$LIBNX/lib"
 LINK_LIBS="$LINK_LIBS -lSDL2_mixer -lmpg123 -lmodplug -lopusfile -lopus -lvorbisidec -logg -lSDL2"
 
-if [ "$USE_CUSTOM_MESA" -eq 0 ]; then
-    if [ -f "$PORTLIBS/lib/libdrm_nouveau.a" ]; then
-        LINK_LIBS="$LINK_LIBS -lEGL -lglapi -ldrm_nouveau"
-    else
-        # Horizon-native Mesa (the switch-dev image): no libdrm_nouveau, see egl.pc
-        LINK_LIBS="$LINK_LIBS -lEGL -lglapi -lexpat"
-    fi
-fi
+# SDL2's EGL helpers are satisfied by stubs in TicoStubs.cpp: linking the
+# portlibs Mesa GL stack too would duplicate Mesa's util code inside NVK.
+LINK_LIBS="$LINK_LIBS $NVK_DEPS"
+
+# Mesa merges NVK's archives with the host ar, which leaves the Rust members
+# out of the symbol index; rebuild it with the devkitA64 archiver.
+NVK_ARCHIVE="$BUILD_DIR/libvulkan.a"
+cp "$NVK_ARCHIVE_SRC" "$NVK_ARCHIVE"
+"$DEVKITA64/bin/aarch64-none-elf-ranlib" "$NVK_ARCHIVE"
 
 LINK_LIBS="$LINK_LIBS -lcurl -lmbedtls -lmbedx509 -lmbedcrypto -lz -lzstd"
 LINK_LIBS="$LINK_LIBS -lnx -lm -lstdc++ -lpthread"
@@ -233,8 +213,8 @@ LINK_LIBS="$LINK_LIBS -lnx -lm -lstdc++ -lpthread"
 $CXX $LINK_FLAGS \
     "${TICO_OBJS[@]}" \
     "$STATIC_LIB" \
-    "${MESA_ARCHIVES[@]}" \
-    $LINK_LIBS \
+    "${GLSLANG_LIBS[@]}" \
+    -Wl,--start-group "$NVK_ARCHIVE" $LINK_LIBS -Wl,--end-group \
     -o "$ELF_OUTPUT"
 
 if [ $? -ne 0 ]; then
@@ -265,6 +245,7 @@ mkdir -p "$ROMFS_DIR"
 [ -d "$TICO_DIR/fonts" ] && cp -r "$TICO_DIR/fonts" "$ROMFS_DIR/"
 [ -d "$TICO_DIR/lang" ] && cp -r "$TICO_DIR/lang" "$ROMFS_DIR/"
 [ -d "$TICO_DIR/assets" ] && cp -r "$TICO_DIR/assets" "$ROMFS_DIR/"
+[ -d "$TICO_DIR/shaders" ] && cp -r "$TICO_DIR/shaders" "$ROMFS_DIR/"
 # the overlay builds its settings menu from the module's own definition
 mkdir -p "$ROMFS_DIR/module"
 cp "$TICO_DIR/module/settings.json" "$ROMFS_DIR/module/"

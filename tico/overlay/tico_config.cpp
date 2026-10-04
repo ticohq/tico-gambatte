@@ -308,6 +308,7 @@ class Manager {
 public:
     void ReloadConfig() {
         options.clear();
+        changed_json.clear();
         original = nlohmann::json::object();
         loaded_path.clear();
 
@@ -349,6 +350,23 @@ public:
         changed[key] = value;
     }
 
+    std::string GetConfigJson(std::string_view key) const {
+        const auto changed_it = changed_json.find(key);
+        if (changed_it != changed_json.end()) {
+            return changed_it->second.dump();
+        }
+        const auto it = original.find(std::string(key));
+        return it != original.end() && (it->is_object() || it->is_array()) ? it->dump()
+                                                                          : std::string();
+    }
+
+    void SetConfigJson(const std::string& key, const std::string& json_text) {
+        nlohmann::json value = nlohmann::json::parse(json_text, nullptr, false);
+        if (!value.is_discarded()) {
+            changed_json[key] = std::move(value);
+        }
+    }
+
     // Writes back what was read, with this session's changes as strings, the
     // way tico stores them (bools as settings.json's bool_true_value and
     // bool_false_value, tico's enabled/disabled when it names none). Keys tico
@@ -356,6 +374,9 @@ public:
     bool SaveConfig() {
         nlohmann::json root = original.is_object() ? original : nlohmann::json::object();
         for (const auto& [key, value] : changed) {
+            root[key] = value;
+        }
+        for (const auto& [key, value] : changed_json) {
             root[key] = value;
         }
         const std::string serialized = root.dump(2);
@@ -405,6 +426,7 @@ public:
 private:
     OptionMap options;
     OptionMap changed;
+    std::map<std::string, nlohmann::json, std::less<>> changed_json;
     nlohmann::json original = nlohmann::json::object();
     std::string loaded_path;
 };
@@ -461,6 +483,14 @@ void SetConfigValue(const std::string& key, const std::string& value) {
 
 bool SaveConfig() {
     return GetManager().SaveConfig();
+}
+
+std::string GetConfigJson(std::string_view key) {
+    return GetManager().GetConfigJson(key);
+}
+
+void SetConfigJson(const std::string& key, const std::string& json_text) {
+    GetManager().SetConfigJson(key, json_text);
 }
 
 void ApplyToCore(const CoreOptionFn& apply) {

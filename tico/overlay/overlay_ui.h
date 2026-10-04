@@ -92,6 +92,39 @@ struct DiscMenuEntry {
 using DiscListFn = std::function<std::vector<DiscMenuEntry>()>;
 void SetDiscCallback(DiscListFn callback);
 
+// Shaders: a "Shaders" category in Settings, listed only in game (tico cannot
+// see the presets on the SD card). Its first row opens a browser over preset
+// folders; one row per #pragma parameter of the active preset follows, then a
+// row that resets them.
+struct ShaderBrowseEntry {
+    std::string label;
+    std::string path;
+    bool is_dir = false;
+};
+struct ShaderParameter {
+    std::string id;
+    std::string label;
+    float value = 0.0f;
+    float minimum = 0.0f;
+    float maximum = 1.0f;
+    float step = 0.01f;
+};
+struct ShaderCallbacks {
+    // name of the active preset, for the first row
+    std::function<std::string()> preset_label;
+    // folder the browser opens in
+    std::function<std::string()> browse_start;
+    // entries of a folder, its parent first
+    std::function<std::vector<ShaderBrowseEntry>(const std::string& dir)> browse;
+    // a preset was chosen
+    std::function<void(const std::string& path)> select;
+    std::function<std::vector<ShaderParameter>()> parameters;
+    std::function<void(const std::string& id, float value)> set_parameter;
+    std::function<void()> reset_parameters;
+};
+// Pass a default-constructed struct to remove the category.
+void SetShaderCallbacks(ShaderCallbacks callbacks);
+
 // The overlay renders on the presentation thread and never calls into the
 // emulator. The emulation thread polls these after each frame.
 

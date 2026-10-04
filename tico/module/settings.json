@@ -108,38 +108,6 @@
                   "value": "Auto"
                 }
               ]
-            },
-            {
-              "key": "shader_type",
-              "label": "settings_gambatte_shader",
-              "type": "enum",
-              "default": "None",
-              "choices": [
-                {
-                  "label": "None",
-                  "value": "None"
-                },
-                {
-                  "label": "LCD",
-                  "value": "LCD"
-                },
-                {
-                  "label": "xBRZ",
-                  "value": "xBRZ"
-                },
-                {
-                  "label": "Eagle",
-                  "value": "Eagle"
-                },
-                {
-                  "label": "Dot Matrix",
-                  "value": "Dot"
-                },
-                {
-                  "label": "LCD Grid",
-                  "value": "LcdGridV2"
-                }
-              ]
             }
           ]
         },
