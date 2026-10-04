@@ -17,6 +17,8 @@ enum class Action {
     Resume,
     Exit,
     Reset,
+    // reload the running game from disk, as if it were started again
+    Restart,
     // the point to go back to is given by ConsumeRewindIndex
     Rewind,
     // a text setting needs the system keyboard; see ConsumeTextEditOption
@@ -29,10 +31,14 @@ enum class Action {
     SaveStateSlot2,
     SaveStateSlot3,
     SaveStateSlot4,
+    SaveStateSlot5,
+    SaveStateSlot6,
     LoadStateSlot1,
     LoadStateSlot2,
     LoadStateSlot3,
     LoadStateSlot4,
+    LoadStateSlot5,
+    LoadStateSlot6,
 };
 
 enum class ToastCorner {
@@ -58,6 +64,9 @@ void SetAvatarTextureId(unsigned long long texture_id);
 // The selection border strip for the tint picked in tico (0 when there is
 // none; selected rows then get a plain highlight).
 void SetBorderTextureId(unsigned long long texture_id);
+// The quick menu's sidebar icons: Settings, Restart and Exit Game (0 for none).
+void SetSidebarIconTextures(unsigned long long settings, unsigned long long restart,
+                            unsigned long long exit);
 void ShowToast(std::string message, ToastCorner corner = ToastCorner::TopLeft);
 bool HasTransientContent();
 

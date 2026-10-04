@@ -473,6 +473,15 @@ int BorderTint() {
     return root["border_tint"].get<int>();
 }
 
+bool DarkMode() {
+    std::string content;
+    if (!ReadWholeFile("sdmc:/tico/config/display.jsonc", content)) {
+        return false;
+    }
+    const nlohmann::json root = nlohmann::json::parse(StripJsonComments(content), nullptr, false);
+    return !root.is_discarded() && root.is_object() && root.value("dark_mode", false);
+}
+
 std::string GetConfigValue(std::string_view key, std::string_view default_value) {
     return GetManager().GetConfigValue(key, default_value);
 }

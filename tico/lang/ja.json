@@ -16,7 +16,7 @@
     "emulator_on": "オン",
     "emulator_off": "オフ",
     "emulator_toggle": "切替",
-    "emulator_no_cheats": "チートが見つかりません",
+    "emulator_no_cheats": "sdmc:/tico/cheats/ にチートがありません",
     "emulator_rewind": "Rewind",
     "emulator_no_rewind_points": "Nothing to rewind to yet",
     "emulator_seconds_ago": "%d seconds ago",
@@ -164,5 +164,11 @@
     "settings_gambatte_value_unlimited": "無制限",
     "settings_gambatte_value_up": "上",
     "emulator_sd_card": "SDカード",
-    "emulator_no_preview": "プレビューなし"
+    "emulator_no_preview": "プレビューなし",
+    "emulator_restart": "再起動",
+    "emulator_restart_confirm": "ゲームを再起動しますか？最後にセーブしてからの進行状況は失われます。",
+    "emulator_exit_confirm": "ゲームを終了しますか？最後にセーブしてからの進行状況は失われます。",
+    "emulator_reset_confirm": "ゲームをリセットしますか？最後にセーブしてからの進行状況は失われます。",
+    "emulator_reset_hint": "本体のリセットボタンと同じです。ゲームを閉じずに最初からやり直します。",
+    "emulator_restart_hint": "ゲームを閉じて開き直します。ticoからもう一度起動したときと同じです。"
 }

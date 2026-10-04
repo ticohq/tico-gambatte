@@ -16,7 +16,7 @@
     "emulator_on": "开",
     "emulator_off": "关",
     "emulator_toggle": "切换",
-    "emulator_no_cheats": "未找到金手指",
+    "emulator_no_cheats": "sdmc:/tico/cheats/ 中没有金手指",
     "emulator_rewind": "Rewind",
     "emulator_no_rewind_points": "Nothing to rewind to yet",
     "emulator_seconds_ago": "%d seconds ago",
@@ -465,5 +465,11 @@
     "settings_gambatte_value_unlimited": "无限制",
     "settings_gambatte_value_up": "上",
     "emulator_sd_card": "SD卡",
-    "emulator_no_preview": "无预览"
+    "emulator_no_preview": "无预览",
+    "emulator_restart": "重新启动",
+    "emulator_restart_confirm": "重新启动游戏？自上次存档后的进度将会丢失。",
+    "emulator_exit_confirm": "退出游戏？自上次存档后的进度将会丢失。",
+    "emulator_reset_confirm": "重置游戏？自上次存档后的进度将会丢失。",
+    "emulator_reset_hint": "相当于按下主机的复位键：游戏不关闭，直接从头开始。",
+    "emulator_restart_hint": "关闭并重新打开游戏，就像从 tico 再次启动一样。"
 }
