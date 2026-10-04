@@ -151,6 +151,8 @@ private:
 
     void LoadSaveData();
     void SaveSaveData();
+    void LoadRtcData();
+    void SaveRtcData();
 
     /// @name Libretro static callbacks (dispatch to instance)
     static bool EnvironmentCallback(unsigned cmd, void *data);
