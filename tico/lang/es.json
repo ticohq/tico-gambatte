@@ -543,5 +543,10 @@
     "emulator_exit_confirm": "¿Salir del juego? Se perderá el progreso desde tu último guardado.",
     "emulator_reset_confirm": "¿Reiniciar el juego desde cero? Se perderá el progreso desde tu último guardado.",
     "emulator_reset_hint": "Como pulsar el botón de reinicio de la consola: el juego empieza de nuevo sin cerrarse.",
-    "emulator_restart_hint": "Cierra y vuelve a abrir el juego, como si lo iniciaras de nuevo desde tico."
+    "emulator_restart_hint": "Cierra y vuelve a abrir el juego, como si lo iniciaras de nuevo desde tico.",
+    "emulator_auto_slot": "Automático (%s)",
+    "emulator_auto_loaded": "Guardado automático cargado",
+    "emulator_continue": "Continuar",
+    "emulator_start_over": "Empezar de nuevo",
+    "emulator_resume_title": "¿Continuar donde lo dejaste?"
 }

@@ -543,5 +543,10 @@
     "emulator_exit_confirm": "Sair do jogo? O progresso desde o último salvamento será perdido.",
     "emulator_reset_confirm": "Resetar o jogo? O progresso desde o último salvamento será perdido.",
     "emulator_reset_hint": "Como apertar o botão de reset do console: o jogo recomeça sem fechar.",
-    "emulator_restart_hint": "Fecha e abre o jogo de novo, como se você o iniciasse outra vez pelo tico."
+    "emulator_restart_hint": "Fecha e abre o jogo de novo, como se você o iniciasse outra vez pelo tico.",
+    "emulator_auto_slot": "Automático (%s)",
+    "emulator_auto_loaded": "Salvamento automático carregado",
+    "emulator_continue": "Continuar",
+    "emulator_start_over": "Começar de novo",
+    "emulator_resume_title": "Continuar de onde parou?"
 }

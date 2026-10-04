@@ -453,5 +453,10 @@
     "emulator_exit_confirm": "Quitter le jeu ? La progression depuis votre dernière sauvegarde sera perdue.",
     "emulator_reset_confirm": "Réinitialiser le jeu ? La progression depuis votre dernière sauvegarde sera perdue.",
     "emulator_reset_hint": "Comme le bouton reset de la console : le jeu recommence sans se fermer.",
-    "emulator_restart_hint": "Ferme et rouvre le jeu, comme si vous le relanciez depuis tico."
+    "emulator_restart_hint": "Ferme et rouvre le jeu, comme si vous le relanciez depuis tico.",
+    "emulator_auto_slot": "Auto (%s)",
+    "emulator_auto_loaded": "Sauvegarde auto chargée",
+    "emulator_continue": "Continuer",
+    "emulator_start_over": "Recommencer",
+    "emulator_resume_title": "Reprendre là où vous vous étiez arrêté ?"
 }
