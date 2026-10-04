@@ -584,5 +584,9 @@
     "emulator_shaders": "Shaders",
     "emulator_none": "Ninguno",
     "emulator_reset_parameters": "Restablecer parámetros",
-    "emulator_no_shaders": "No se encontraron shaders"
+    "emulator_no_shaders": "No se encontraron shaders",
+    "emulator_hardcore_no_load": "Cargar estados está desactivado en el modo Hardcore",
+    "emulator_save_failed": "No se pudo guardar en la ranura %d",
+    "emulator_load_failed": "No se pudo cargar la ranura %d",
+    "emulator_hardcore_pause_wait": "Hardcore: el menú podrá abrirse en %d s"
 }

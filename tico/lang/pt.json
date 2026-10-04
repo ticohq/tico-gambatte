@@ -584,5 +584,9 @@
     "emulator_shaders": "Filtros",
     "emulator_none": "Nenhum",
     "emulator_reset_parameters": "Redefinir parâmetros",
-    "emulator_no_shaders": "Nenhum filtro encontrado"
+    "emulator_no_shaders": "Nenhum filtro encontrado",
+    "emulator_hardcore_no_load": "Carregar estados está desativado no modo Hardcore",
+    "emulator_save_failed": "Não foi possível salvar no slot %d",
+    "emulator_load_failed": "Não foi possível carregar o slot %d",
+    "emulator_hardcore_pause_wait": "Hardcore: o menu poderá abrir em %d s"
 }

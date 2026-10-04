@@ -211,5 +211,9 @@
     "emulator_shaders": "シェーダー",
     "emulator_none": "なし",
     "emulator_reset_parameters": "パラメーターをリセット",
-    "emulator_no_shaders": "シェーダーが見つかりません"
+    "emulator_no_shaders": "シェーダーが見つかりません",
+    "emulator_hardcore_no_load": "ハードコアモードではステートをロードできません",
+    "emulator_save_failed": "スロット%dに保存できませんでした",
+    "emulator_load_failed": "スロット%dをロードできませんでした",
+    "emulator_hardcore_pause_wait": "ハードコア: あと %d 秒でメニューを開けます"
 }

@@ -51,6 +51,8 @@ void SetVisible(bool visible);
 Action Render(int display_w, int display_h);
 
 void SetGameTitle(std::string title);
+// RetroAchievements hardcore: Load State, Rewind and Cheats leave the menu.
+void SetHardcoreMode(bool hardcore);
 void SetNickname(std::string nickname);
 void SetAvatarTextureId(unsigned long long texture_id);
 // The selection border strip for the tint picked in tico (0 when there is

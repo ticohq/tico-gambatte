@@ -494,5 +494,9 @@
     "emulator_shaders": "Filtres",
     "emulator_none": "Aucun",
     "emulator_reset_parameters": "Réinitialiser les paramètres",
-    "emulator_no_shaders": "Aucun filtre trouvé"
+    "emulator_no_shaders": "Aucun filtre trouvé",
+    "emulator_hardcore_no_load": "Le chargement des sauvegardes est désactivé en mode Hardcore",
+    "emulator_save_failed": "Impossible de sauvegarder dans l'emplacement %d",
+    "emulator_load_failed": "Impossible de charger l'emplacement %d",
+    "emulator_hardcore_pause_wait": "Hardcore : le menu pourra s'ouvrir dans %d s"
 }
