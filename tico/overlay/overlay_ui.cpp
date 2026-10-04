@@ -99,6 +99,7 @@ std::mutex s_toast_mutex;
 std::array<std::string, kToastSlotCount> s_toast_messages{};
 std::array<float, kToastSlotCount> s_toast_timers{};
 SlotOccupiedFn s_slot_occupied_cb;
+SlotPreviewFn s_slot_preview_cb;
 CheatListFn s_cheat_list_cb;
 CheatToggleFn s_cheat_toggle_cb;
 RewindListFn s_rewind_list_cb;
@@ -106,6 +107,7 @@ DiscListFn s_disc_list_cb;
 std::vector<CheatMenuEntry> s_cheat_entries;
 std::vector<DiscMenuEntry> s_disc_entries;
 std::array<bool, kOverlaySlotCount> s_slot_occupied{};
+std::array<SlotPreview, kOverlaySlotCount> s_slot_preview{};
 std::vector<int> s_rewind_points;
 ShaderCallbacks s_shader_cb;
 LibraryCallbacks s_library_cb;
@@ -742,6 +744,7 @@ void RefreshCheats() {
 
 void RefreshSlots() {
     for (int i = 0; i < kOverlaySlotCount; ++i) {
+        s_slot_preview[i] = s_slot_preview_cb ? s_slot_preview_cb(i + 1) : SlotPreview{};
         s_slot_occupied[i] = s_slot_occupied_cb ? s_slot_occupied_cb(i + 1) : false;
     }
 }
@@ -1210,6 +1213,95 @@ void RenderMenu(ImDrawList* dl, ImVec2 display_size, float ease, const std::vect
     DrawScrollbar(dl, menu_pos.x + menu_size.x - (8.0f * scale), menu_pos.y + corner_radius,
                   menu_size.y - (2.0f * corner_radius), first_visible, visible_count, item_count,
                   ease);
+}
+
+// Save and Load State as one wide panel: the slots down the left and, beside
+// them, the picture taken when the selected slot was saved and when that was.
+void RenderStates(ImDrawList* dl, ImVec2 display_size, float ease, const std::vector<MenuRow>& rows) {
+    const float scale = ImGui::GetIO().FontGlobalScale;
+    ImFont* font = ImGui::GetFont();
+    const int alpha = static_cast<int>(255.0f * ease);
+    const float corner_radius = 16.0f * scale;
+    const float row_radius = 12.0f * scale;
+    const float pad = 14.0f * scale;
+    const float row_height = 64.0f * scale;
+    const float label_size = ImGui::GetFontSize() * 0.85f;
+
+    // between the title card and the helpers bar, like Settings
+    const float top_space = 110.0f * scale;
+    const float bottom_space = 96.0f * scale;
+    const ImVec2 panel_size(std::min(kSettingsWidth * scale, display_size.x - (64.0f * scale)),
+                            std::min(kSettingsHeight * scale,
+                                     display_size.y - top_space - bottom_space));
+    const float target_y =
+        top_space + ((display_size.y - top_space - bottom_space - panel_size.y) * 0.5f);
+    const float start_y = display_size.y + (100.0f * scale);
+    const ImVec2 panel_min((display_size.x - panel_size.x) * 0.5f,
+                           start_y + ((target_y - start_y) * ease));
+    const ImVec2 panel_max(panel_min.x + panel_size.x, panel_min.y + panel_size.y);
+    const float list_right = panel_min.x + (400.0f * scale);
+
+    dl->AddRectFilled(panel_min, panel_max, IM_COL32(45, 45, 45, alpha), corner_radius);
+    dl->AddRectFilled(panel_min, ImVec2(list_right, panel_max.y), IM_COL32(34, 34, 34, alpha),
+                      corner_radius, ImDrawFlags_RoundCornersLeft);
+    AddHit(panel_min, panel_max, HitKind::Panel);
+
+    // the slots, centred down the list
+    const int count = static_cast<int>(rows.size());
+    const float list_h = static_cast<float>(count) * row_height;
+    const float list_top = panel_min.y + std::max(pad, (panel_size.y - list_h) * 0.5f);
+    for (int i = 0; i < count; ++i) {
+        const ImVec2 item_min(panel_min.x + pad, list_top + (static_cast<float>(i) * row_height));
+        const ImVec2 item_max(list_right - pad, item_min.y + row_height);
+        const bool selected = i == s_selected;
+        if (selected) {
+            DrawSelection(dl, item_min, item_max, row_radius, ease);
+        }
+        AddHit(item_min, item_max, HitKind::MenuRow, i);
+        DrawRowContent(dl, rows[static_cast<std::size_t>(i)], item_min, item_max, selected, ease,
+                       label_size);
+    }
+
+    // the selected slot's picture, as large as the pane allows
+    const float pane_left = list_right + (2.0f * pad);
+    const float pane_right = panel_max.x - (2.0f * pad);
+    const float caption_h = 48.0f * scale;
+    const float pane_top = panel_min.y + (2.0f * pad);
+    const float pane_bottom = panel_max.y - (2.0f * pad) - caption_h;
+    const SlotPreview& preview =
+        s_slot_preview[static_cast<std::size_t>(std::clamp(s_selected, 0, kOverlaySlotCount - 1))];
+    const float aspect = preview.aspect > 0.1f ? preview.aspect : (4.0f / 3.0f);
+    float pic_w = pane_right - pane_left;
+    float pic_h = pic_w / aspect;
+    if (pic_h > pane_bottom - pane_top) {
+        pic_h = pane_bottom - pane_top;
+        pic_w = pic_h * aspect;
+    }
+    const ImVec2 pic_min(pane_left + ((pane_right - pane_left - pic_w) * 0.5f),
+                         pane_top + ((pane_bottom - pane_top - pic_h) * 0.5f));
+    const ImVec2 pic_max(pic_min.x + pic_w, pic_min.y + pic_h);
+    if (preview.texture) {
+        dl->AddImageRounded(ImTextureRef(static_cast<ImTextureID>(preview.texture)), pic_min, pic_max,
+                            ImVec2(0.0f, 0.0f), ImVec2(1.0f, 1.0f),
+                            IM_COL32(255, 255, 255, alpha), row_radius);
+    } else {
+        dl->AddRectFilled(pic_min, pic_max, IM_COL32(28, 28, 28, alpha), row_radius);
+        const std::string none = preview.saved_at.empty() ? TrOr("emulator_empty", "Empty")
+                                                          : TrOr("emulator_no_preview", "No preview");
+        const ImVec2 none_size = font->CalcTextSizeA(label_size, FLT_MAX, 0.0f, none.c_str());
+        dl->AddText(font, label_size,
+                    ImVec2(pic_min.x + ((pic_w - none_size.x) * 0.5f),
+                           pic_min.y + ((pic_h - none_size.y) * 0.5f)),
+                    IM_COL32(150, 150, 150, alpha), none.c_str());
+    }
+    if (!preview.saved_at.empty()) {
+        const float caption_size = ImGui::GetFontSize() * 0.7f;
+        const ImVec2 caption_text = font->CalcTextSizeA(caption_size, FLT_MAX, 0.0f, preview.saved_at.c_str());
+        dl->AddText(font, caption_size,
+                    ImVec2(pane_left + ((pane_right - pane_left - caption_text.x) * 0.5f),
+                           pic_max.y + ((caption_h - caption_text.y) * 0.5f) + pad * 0.5f),
+                    IM_COL32(170, 170, 170, alpha), preview.saved_at.c_str());
+    }
 }
 
 // Settings as one wide panel: the categories down a sidebar on the left and the
@@ -2201,6 +2293,11 @@ void SetSlotOccupiedCallback(SlotOccupiedFn callback) {
     s_slot_occupied_cb = std::move(callback);
 }
 
+void SetSlotPreviewCallback(SlotPreviewFn callback) {
+    s_slot_preview_cb = std::move(callback);
+    s_slot_preview = {};
+}
+
 void SetCheatCallbacks(CheatListFn list_callback, CheatToggleFn toggle_callback) {
     s_cheat_list_cb = std::move(list_callback);
     s_cheat_toggle_cb = std::move(toggle_callback);
@@ -2392,6 +2489,8 @@ Action Render(int display_w, int display_h) {
     RenderTitleCard(dl, display_size, ease);
     if (s_menu == MenuScreen::SettingsCategories || s_menu == MenuScreen::SettingsOptions) {
         RenderSettings(dl, display_size, ease);
+    } else if (s_menu == MenuScreen::SaveStates || s_menu == MenuScreen::LoadStates) {
+        RenderStates(dl, display_size, ease, rows);
     } else {
         RenderMenu(dl, display_size, ease, rows);
     }

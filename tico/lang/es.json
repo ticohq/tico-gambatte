@@ -536,5 +536,6 @@
     "settings_gambatte_value_twb64_pack_3": "Paquete 3 de TWB64",
     "settings_gambatte_value_unlimited": "Ilimitado",
     "settings_gambatte_value_up": "Arriba",
-    "emulator_sd_card": "Tarjeta SD"
+    "emulator_sd_card": "Tarjeta SD",
+    "emulator_no_preview": "Sin vista previa"
 }
