@@ -99,6 +99,7 @@ CXXFLAGS="$COMMON_FLAGS -std=gnu++17 -fvisibility-inlines-hidden -fno-rtti -fno-
 TICO_SOURCES=(
     "$TICO_DIR/TicoMain.cpp"
     "$TICO_DIR/TicoCore.cpp"
+    "$TICO_DIR/UsbStorage.cpp"
     "$TICO_DIR/TicoVulkan.cpp"
     "$TICO_DIR/TicoShaderChain.cpp"
     "$TICO_DIR/TicoSlang.cpp"
@@ -196,7 +197,8 @@ ELF_OUTPUT="$BUILD_DIR/gambatte_tico.elf"
 LINK_FLAGS="-specs=$LIBNX/switch.specs -march=armv8-a+crc+crypto -mtune=cortex-a57 -mtp=soft -fPIE"
 LINK_FLAGS="$LINK_FLAGS -Wl,--gc-sections -Wl,-Map=$BUILD_DIR/gambatte_tico.map"
 
-LINK_LIBS="-L$PORTLIBS/lib -L$LIBNX/lib"
+# tico/deps/usbhsfs first: libusbhsfs (FAT/exFAT) that also reads NTFS through usbntfs
+LINK_LIBS="-L$TICO_DIR/deps/usbhsfs/lib -L$PORTLIBS/lib -L$LIBNX/lib"
 LINK_LIBS="$LINK_LIBS -lSDL2_mixer -lmpg123 -lmodplug -lopusfile -lopus -lvorbisidec -logg -lSDL2"
 
 # SDL2's EGL helpers are satisfied by stubs in TicoStubs.cpp: linking the
@@ -210,7 +212,7 @@ cp "$NVK_ARCHIVE_SRC" "$NVK_ARCHIVE"
 "$DEVKITA64/bin/aarch64-none-elf-ranlib" "$NVK_ARCHIVE"
 
 LINK_LIBS="$LINK_LIBS -lcurl -lmbedtls -lmbedx509 -lmbedcrypto -larchive -lbz2 -llzma -llz4 -lz -lzstd"
-LINK_LIBS="$LINK_LIBS -lnx -lm -lstdc++ -lpthread"
+LINK_LIBS="$LINK_LIBS -lusbhsfs -lusbntfs -lnx -lm -lstdc++ -lpthread"
 
 $CXX $LINK_FLAGS \
     "${TICO_OBJS[@]}" \

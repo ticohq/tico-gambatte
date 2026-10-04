@@ -21,6 +21,8 @@ bool IsVisible();
 
 // Edge-triggered menu navigation for the next drawn frame.
 void FeedNav(const OverlayUI::NavInput& nav);
+// The touchscreen's current state, read while the menu is open.
+void FeedTouch(const OverlayUI::TouchInput& touch);
 
 // Draws the menu, HUD, toasts and RetroAchievements alerts into the current
 // ImGui frame, over a width x height display.

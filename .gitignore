@@ -9,3 +9,6 @@
 package.json
 build_tico
 build_glslang_nx
+
+# prebuilt libusbhsfs + read-only NTFS (usbntfs), see tico/deps/usbhsfs
+!tico/deps/usbhsfs/lib/*.a

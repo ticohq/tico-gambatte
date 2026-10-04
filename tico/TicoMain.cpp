@@ -3,6 +3,7 @@
 /// Sets up SDL/Vulkan/ImGui and runs the main loop
 
 #include "TicoCore.h"
+#include "UsbStorage.h"
 #include "TicoConfig.h"
 #include "TicoAudio.h"
 #include "TicoShaderChain.h"
@@ -784,6 +785,24 @@ static void CloseMenu()
 }
 
 // D-pad + left stick, edge plus hold-repeat; Switch A accepts, B goes back.
+// The first finger on the touchscreen, for the menu (no controller needed).
+static void FeedMenuTouch()
+{
+    OverlayUI::TouchInput touch{};
+#ifdef __SWITCH__
+    static bool initialized = false;
+    if (!initialized)
+    {
+        hidInitializeTouchScreen();
+        initialized = true;
+    }
+    HidTouchScreenState state{};
+    if (hidGetTouchScreenStates(&state, 1) > 0 && state.count > 0)
+        touch = {true, static_cast<float>(state.touches[0].x), static_cast<float>(state.touches[0].y)};
+#endif
+    ImGuiOverlay::FeedTouch(touch);
+}
+
 static void FeedMenu(SDL_GameController *pad)
 {
     enum : uint32_t { Up = 1, Down = 2, Left = 4, Right = 8 };
@@ -1226,11 +1245,17 @@ static void SetModuleRomFolders(const std::string &slug, const std::vector<std::
 static std::vector<std::string> RomFoldersFor(const std::string &slug)
 {
     std::vector<std::string> folders;
+    auto add = [&](const std::string &folder) {
+        // a folder on a USB drive is read through the drive's current mount,
+        // and left out while the drive is not connected
+        const std::string mounted = UsbStorage::Resolve(folder);
+        if (!mounted.empty() && std::find(folders.begin(), folders.end(), mounted) == folders.end())
+            folders.push_back(mounted);
+    };
     for (const std::string &base : TicoRomBases())
-        folders.push_back(base + slug + "/");
+        add(base + slug + "/");
     for (const std::string &folder : ModuleRomFolders(slug))
-        if (std::find(folders.begin(), folders.end(), folder) == folders.end())
-            folders.push_back(folder);
+        add(folder);
     return folders;
 }
 
@@ -1342,8 +1367,15 @@ static void RegisterLibrary()
 
 // Creates the core for a game and loads it. The console picks the save and
 // state folders, so it is set before the core, which reads them when created.
-static void StartGame(const std::string &slug, const std::string &romPath, const std::string &titleArg)
+static void StartGame(const std::string &slug, const std::string &romArg, const std::string &titleArg)
 {
+    // tico names a game on a USB drive by the drive's id: find where it is mounted
+    std::string romPath = UsbStorage::Resolve(romArg);
+    if (romPath.empty())
+    {
+        LOG_ERROR("HOME", "USB drive for %s is not connected", romArg.c_str());
+        romPath = romArg;
+    }
     TicoConfig::SetSlug(slug);
     LOG_INFO("HOME", "Console slug: %s, ROM: %s", slug.c_str(), romPath.c_str());
     TicoConfig::MakeDirs(TicoConfig::SavesPath());
@@ -1452,6 +1484,7 @@ void HandleInput()
     {
         if (pad)
             FeedMenu(pad);
+        FeedMenuTouch();
         return;
     }
 
@@ -1620,6 +1653,9 @@ int main(int argc, char *argv[])
     {
         LOG_ERROR("HOME", "socketInitializeDefault failed");
     }
+
+    // USB drives mount in the background while the rest starts
+    UsbStorage::Init();
 #endif
 
     LOG_INFO("HOME", "gambatte starting (slug: %s)...", TicoConfig::CURRENT_SLUG.c_str());
@@ -1741,6 +1777,7 @@ int main(int argc, char *argv[])
     CleanupWindow();
 
 #ifdef __SWITCH__
+    UsbStorage::Shutdown(); // flush and unmount before tico takes over again
     socketExit();
     romfsExit();
     appletUnlockExit();

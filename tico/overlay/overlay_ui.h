@@ -202,4 +202,12 @@ struct NavInput {
 };
 void FeedNav(const NavInput& nav);
 
+// The touchscreen this frame, in its 1280x720 coordinates.
+struct TouchInput {
+    bool down;
+    float x;
+    float y;
+};
+void FeedTouch(const TouchInput& touch);
+
 } // namespace SwitchFrontend::OverlayUI

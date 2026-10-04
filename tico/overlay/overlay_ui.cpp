@@ -3,6 +3,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include "overlay/overlay_ui.h"
+#include "UsbStorage.h"
 #include "overlay/tico_config.h"
 #include "overlay/translation_manager.h"
 
@@ -16,6 +17,7 @@
 #include <sys/stat.h>
 #include <mutex>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 #include <switch.h>
@@ -110,8 +112,11 @@ LibraryCallbacks s_library_cb;
 LibraryFolderCallbacks s_folder_cb;
 bool s_library_mode = false;
 std::vector<LibraryEntry> s_library_entries;
+// the folder shown by the folder browser; empty while it lists the drives
 std::string s_folder_dir;
 std::vector<std::string> s_folder_subdirs;
+// the drive list: each drive's name and root
+std::vector<std::pair<std::string, std::string>> s_folder_drives;
 // the folder being edited: its group, and its index (-1 while adding)
 int s_folder_group = 0;
 int s_folder_index = -1;
@@ -132,6 +137,44 @@ std::mutex s_hud_mutex;
 HudStats s_hud_stats{};
 int s_fps_position = 0;
 int s_resolution_position = 0;
+
+// Touch: the drawn rows are recorded as hit regions each frame, and the next
+// frame's touch is tested against them. As in tico's own menus, a press
+// selects a row, a tap on the row that was already selected activates it,
+// dragging scrolls the list and a tap outside the menu goes back.
+enum class HitKind {
+    MenuRow,     // a row of the quick menu or one of its lists
+    CategoryRow, // settings sidebar
+    OptionRow,   // settings options pane
+    StepLeft,    // the selected option's change arrows
+    StepRight,
+    Back,        // helpers bar
+    Accept,
+    Panel,       // the menu's background: taps there do nothing
+};
+struct HitRegion {
+    ImVec2 min;
+    ImVec2 max;
+    HitKind kind;
+    int index;
+};
+std::vector<HitRegion> s_hits;
+TouchInput s_touch{};
+bool s_touch_was_down = false;
+bool s_touch_ignore = false; // a finger already down when the menu opened
+bool s_touch_tracking = false;
+bool s_touch_moved = false;
+bool s_touch_started_selected = false;
+HitKind s_touch_kind = HitKind::Panel;
+int s_touch_index = -1;
+int s_touch_scrolled = 0; // rows scrolled by the current drag
+float s_touch_row_height = 0.0f;
+ImVec2 s_touch_start;
+ImVec2 s_touch_last;
+
+void AddHit(ImVec2 min, ImVec2 max, HitKind kind, int index = -1) {
+    s_hits.push_back({min, max, kind, index});
+}
 
 float EaseOutCubic(float t) {
     t = std::clamp(t, 0.0f, 1.0f);
@@ -453,7 +496,7 @@ std::vector<MenuRow> BuildFolderRows() {
             break;
         }
         case FolderEntry::Base: {
-            MenuRow row{group.bases[static_cast<std::size_t>(entry.index)]};
+            MenuRow row{UsbStorage::DisplayName(group.bases[static_cast<std::size_t>(entry.index)])};
             row.value = "tico";
             row.static_value = true;
             row.dimmed = true;
@@ -471,7 +514,7 @@ std::vector<MenuRow> BuildFolderRows() {
             break;
         }
         case FolderEntry::Folder: {
-            MenuRow row{group.folders[static_cast<std::size_t>(entry.index)]};
+            MenuRow row{UsbStorage::DisplayName(group.folders[static_cast<std::size_t>(entry.index)])};
             rows.push_back(row);
             break;
         }
@@ -491,7 +534,9 @@ std::string FolderIdentity(std::string path) {
 }
 
 // Stores `path` as the folder being added or changed. False for a duplicate.
-bool StoreFolder(const std::string& path) {
+bool StoreFolder(const std::string& picked) {
+    // a folder on a USB drive is kept by the drive's id, not its umsN: mount
+    const std::string path = UsbStorage::ToToken(picked);
     std::vector<LibraryFolderGroup> groups = FolderGroups();
     if (s_folder_group < 0 || s_folder_group >= static_cast<int>(groups.size()) || !s_folder_cb.set) {
         return false;
@@ -539,12 +584,35 @@ std::string EditedFolder() {
                : std::string();
 }
 
+// The drives a folder can be on: the SD card and each USB drive.
+void OpenDriveList() {
+    s_folder_dir.clear();
+    s_folder_subdirs.clear();
+    s_folder_drives = {{TrOr("emulator_sd_card", "SD card"), "sdmc:/"}};
+    for (const UsbStorage::Volume& volume : UsbStorage::Volumes()) {
+        s_folder_drives.emplace_back(volume.label, volume.root);
+    }
+    s_menu = MenuScreen::FolderBrowser;
+    s_selected = 0;
+}
+
+// sdmc:/, ums0:/ and the like
+bool IsDriveRoot(const std::string& dir) {
+    return dir.size() >= 2 && dir.compare(dir.size() - 2, 2, ":/") == 0;
+}
+
 void OpenFolderBrowser(std::string dir) {
-    if (dir.empty() || dir.back() != '/') {
+    dir = UsbStorage::Resolve(dir);
+    if (dir.empty()) {
+        OpenDriveList(); // the folder's drive is not connected
+        return;
+    }
+    if (dir.back() != '/') {
         dir += '/';
     }
     s_folder_dir = dir;
     s_folder_subdirs.clear();
+    s_folder_drives.clear();
     if (DIR* d = opendir(dir.c_str())) {
         while (struct dirent* e = readdir(d)) {
             const std::string name = e->d_name;
@@ -830,7 +898,7 @@ std::vector<MenuRow> BuildRows() {
         break;
     case MenuScreen::FolderConfirm: {
         MenuRow remove{TrOr("emulator_remove", "Remove")};
-        remove.value = EditedFolder();
+        remove.value = UsbStorage::DisplayName(EditedFolder());
         remove.static_value = true;
         rows.push_back(remove);
         rows.push_back({TrOr("emulator_cancel", "Cancel")});
@@ -838,12 +906,18 @@ std::vector<MenuRow> BuildRows() {
     }
     case MenuScreen::FolderBrowser: {
         MenuRow use{TrOr("emulator_use_folder", "Use this folder")};
-        use.value = s_folder_dir;
+        use.value = UsbStorage::DisplayName(s_folder_dir);
         use.static_value = true;
+        use.dimmed = s_folder_dir.empty(); // the drive list is not a folder
         rows.push_back(use);
-        rows.push_back({".."});
+        MenuRow up{".."};
+        up.dimmed = s_folder_dir.empty();
+        rows.push_back(up);
         for (const std::string& name : s_folder_subdirs) {
             rows.push_back({name + "/"});
+        }
+        for (const auto& drive : s_folder_drives) {
+            rows.push_back({drive.first});
         }
         break;
     }
@@ -1024,7 +1098,7 @@ int FirstVisibleRow(int selected, int count, int visible) {
 // The label, and the value (with change arrows when selected) or checkbox, of
 // one row inside [item_min, item_max].
 void DrawRowContent(ImDrawList* dl, const MenuRow& row, ImVec2 item_min, ImVec2 item_max,
-                    bool selected, float ease, float label_size) {
+                    bool selected, float ease, float label_size, bool touch_arrows = false) {
     const float scale = ImGui::GetIO().FontGlobalScale;
     ImFont* font = ImGui::GetFont();
     const int alpha = static_cast<int>(255.0f * ease);
@@ -1062,6 +1136,13 @@ void DrawRowContent(ImDrawList* dl, const MenuRow& row, ImVec2 item_min, ImVec2 
             dl->AddTriangleFilled(ImVec2(right_x + arrow_size, arrow_y + (arrow_size * 0.5f)),
                                   ImVec2(right_x, arrow_y), ImVec2(right_x, arrow_y + arrow_size),
                                   text_color);
+            if (touch_arrows) {
+                // finger-sized targets around each arrow, the value between them
+                const float mid_x = value_x + (value_size.x * 0.5f);
+                AddHit(ImVec2(left_x - (24.0f * scale), item_min.y), ImVec2(mid_x, item_max.y),
+                       HitKind::StepLeft);
+                AddHit(ImVec2(mid_x, item_min.y), item_max, HitKind::StepRight);
+            }
         }
         label_max_width = value_x - (2.0f * arrow_gap) - arrow_size - text_x;
     }
@@ -1108,6 +1189,7 @@ void RenderMenu(ImDrawList* dl, ImVec2 display_size, float ease, const std::vect
 
     dl->AddRectFilled(menu_pos, ImVec2(menu_pos.x + menu_size.x, menu_pos.y + menu_size.y),
                       IM_COL32(45, 45, 45, alpha), corner_radius);
+    AddHit(menu_pos, ImVec2(menu_pos.x + menu_size.x, menu_pos.y + menu_size.y), HitKind::Panel);
 
     const float label_size = ImGui::GetFontSize() * (wide ? 0.82f : 0.85f);
     const int first_visible = FirstVisibleRow(s_selected, item_count, visible_count);
@@ -1120,6 +1202,7 @@ void RenderMenu(ImDrawList* dl, ImVec2 display_size, float ease, const std::vect
         if (selected) {
             DrawSelection(dl, item_min, item_max, corner_radius, ease);
         }
+        AddHit(item_min, item_max, HitKind::MenuRow, i);
         DrawRowContent(dl, rows[static_cast<std::size_t>(i)], item_min, item_max, selected, ease,
                        label_size);
     }
@@ -1159,6 +1242,7 @@ void RenderSettings(ImDrawList* dl, ImVec2 display_size, float ease) {
     const float sidebar_right = panel_min.x + (kSidebarWidth * scale);
 
     dl->AddRectFilled(panel_min, panel_max, IM_COL32(45, 45, 45, alpha), corner_radius);
+    AddHit(panel_min, panel_max, HitKind::Panel);
     dl->AddRectFilled(panel_min, ImVec2(sidebar_right, panel_max.y), IM_COL32(34, 34, 34, alpha),
                       corner_radius, ImDrawFlags_RoundCornersLeft);
 
@@ -1184,6 +1268,7 @@ void RenderSettings(ImDrawList* dl, ImVec2 display_size, float ease) {
         } else if (active) {
             DrawSelection(dl, item_min, item_max, row_radius, ease);
         }
+        AddHit(item_min, item_max, HitKind::CategoryRow, i);
         MenuRow row{CategoryLabel(i)};
         DrawRowContent(dl, row, item_min, item_max, active, ease, label_size);
     }
@@ -1227,8 +1312,10 @@ void RenderSettings(ImDrawList* dl, ImVec2 display_size, float ease) {
         if (selected) {
             DrawSelection(dl, item_min, item_max, row_radius, ease);
         }
+        // the arrows go first so they win over the row they sit on
         DrawRowContent(dl, rows[static_cast<std::size_t>(i)], item_min, item_max, selected, ease,
-                       label_size);
+                       label_size, selected);
+        AddHit(item_min, item_max, HitKind::OptionRow, i);
     }
     DrawScrollbar(dl, panel_max.x - (8.0f * scale), list_top, list_bottom - list_top, first_option,
                   option_visible, option_count, ease);
@@ -1301,6 +1388,7 @@ void RenderHelpersBar(ImDrawList* dl, ImVec2 display_size, float ease) {
     const ImU32 text_color = IM_COL32(200, 200, 200, static_cast<int>(255.0f * ease));
 
     for (const Helper& helper : helpers) {
+        const float helper_x = cursor_x;
         DrawSwitchButton(dl, font, font_size, ImVec2(cursor_x + (button_size * 0.5f), center_y),
                          button_size, helper.button, ease);
 
@@ -1311,6 +1399,9 @@ void RenderHelpersBar(ImDrawList* dl, ImVec2 display_size, float ease) {
         dl->AddText(font, font_size, ImVec2(cursor_x, center_y - (text_size.y * 0.5f)), text_color,
                     text_begin, text_end);
         cursor_x += text_size.x + item_spacing;
+        AddHit(ImVec2(helper_x - (item_spacing * 0.5f), bar_y),
+               ImVec2(cursor_x - (item_spacing * 0.5f), bar_y + bar_height),
+               helper.button[0] == 'B' ? HitKind::Back : HitKind::Accept);
     }
 }
 
@@ -1699,6 +1790,23 @@ Action AcceptSelection(const std::vector<MenuRow>& rows) {
         return Action::None;
     }
     case MenuScreen::FolderBrowser: {
+        if (s_folder_dir.empty()) {
+            // the drive list: open the chosen drive
+            if (s_selected >= 2 && s_selected - 2 < static_cast<int>(s_folder_drives.size())) {
+                OpenFolderBrowser(s_folder_drives[static_cast<std::size_t>(s_selected - 2)].second);
+            }
+            return Action::None;
+        }
+        if (s_selected == 1 && IsDriveRoot(s_folder_dir)) {
+            const std::string from = s_folder_dir;
+            OpenDriveList();
+            for (std::size_t i = 0; i < s_folder_drives.size(); ++i) {
+                if (s_folder_drives[i].second == from) {
+                    s_selected = static_cast<int>(i) + 2;
+                }
+            }
+            return Action::None;
+        }
         if (s_selected == 0) {
             if (StoreFolder(s_folder_dir)) {
                 RefreshLibrary();
@@ -1821,7 +1929,12 @@ Action AcceptSelection(const std::vector<MenuRow>& rows) {
             if (entry.kind == FolderEntry::Add &&
                 groups[static_cast<std::size_t>(entry.group)].folders.size() < kMaxLibraryFolders) {
                 s_folder_index = -1;
-                OpenFolderBrowser("sdmc:/");
+                // with a USB drive connected, start from the drives to choose from
+                if (UsbStorage::Volumes().empty()) {
+                    OpenFolderBrowser("sdmc:/");
+                } else {
+                    OpenDriveList();
+                }
             } else if (entry.kind == FolderEntry::Folder) {
                 s_folder_index = entry.index;
                 s_menu = MenuScreen::FolderActions;
@@ -1899,6 +2012,144 @@ Action CancelScreen() {
     return Action::None;
 }
 
+// The first region drawn under pos; a panel only when nothing on it is.
+const HitRegion* HitTest(ImVec2 pos) {
+    const HitRegion* panel = nullptr;
+    for (const HitRegion& hit : s_hits) {
+        if (pos.x >= hit.min.x && pos.x < hit.max.x && pos.y >= hit.min.y && pos.y < hit.max.y) {
+            if (hit.kind != HitKind::Panel) {
+                return &hit;
+            }
+            panel = panel ? panel : &hit;
+        }
+    }
+    return panel;
+}
+
+bool IsSelectedRow(HitKind kind, int index) {
+    switch (kind) {
+    case HitKind::MenuRow:
+        return s_selected == index;
+    case HitKind::CategoryRow:
+        return s_menu == MenuScreen::SettingsCategories && s_selected == index;
+    case HitKind::OptionRow:
+        return s_menu == MenuScreen::SettingsOptions && s_selected == index;
+    default:
+        return false;
+    }
+}
+
+// Puts focus on a row: settings rows also move focus between the sidebar and
+// the options pane.
+void SelectRow(HitKind kind, int index) {
+    if (kind == HitKind::CategoryRow) {
+        s_menu = MenuScreen::SettingsCategories;
+        s_category_selected = index;
+    } else if (kind == HitKind::OptionRow) {
+        s_menu = MenuScreen::SettingsOptions;
+    }
+    s_selected = index;
+}
+
+// Turns this frame's touch into navigation, using the regions the previous
+// frame drew. display_size is the overlay's; touch comes in 1280x720.
+NavInput ApplyTouch(ImVec2 display_size, int item_count, NavInput nav) {
+    const TouchInput touch = s_touch;
+    const bool pressed = touch.down && !s_touch_was_down;
+    const bool released = !touch.down && s_touch_was_down;
+    s_touch_was_down = touch.down;
+    if (s_touch_ignore) {
+        s_touch_ignore = touch.down;
+        return nav;
+    }
+    if (!touch.down && !released) {
+        return nav;
+    }
+
+    const ImVec2 pos = touch.down ? ImVec2(touch.x * display_size.x / 1280.0f,
+                                           touch.y * display_size.y / 720.0f)
+                                  : s_touch_last;
+    s_touch_last = pos;
+    const float scale = ImGui::GetIO().FontGlobalScale;
+
+    if (pressed) {
+        const HitRegion* hit = HitTest(pos);
+        if (!hit) {
+            nav.cancel = true; // outside the menu
+            return nav;
+        }
+        s_touch_tracking = true;
+        s_touch_moved = false;
+        s_touch_start = pos;
+        s_touch_kind = hit->kind;
+        s_touch_index = hit->index;
+        s_touch_scrolled = 0;
+        s_touch_row_height = hit->max.y - hit->min.y;
+        s_touch_started_selected = IsSelectedRow(hit->kind, hit->index);
+        if (hit->kind == HitKind::MenuRow || hit->kind == HitKind::CategoryRow ||
+            hit->kind == HitKind::OptionRow) {
+            SelectRow(hit->kind, hit->index);
+        }
+        return nav;
+    }
+    if (!s_touch_tracking) {
+        return nav;
+    }
+
+    if (touch.down) {
+        if (std::fabs(pos.x - s_touch_start.x) > 18.0f * scale ||
+            std::fabs(pos.y - s_touch_start.y) > 18.0f * scale) {
+            s_touch_moved = true;
+        }
+        // dragging a list moves its selection a row at a time, scrolling it
+        const bool list = s_touch_kind == HitKind::MenuRow ||
+                          s_touch_kind == HitKind::CategoryRow ||
+                          s_touch_kind == HitKind::OptionRow;
+        if (list && s_touch_moved && s_touch_row_height > 0.0f && item_count > 0) {
+            const int rows = static_cast<int>((s_touch_start.y - pos.y) / s_touch_row_height);
+            if (rows != s_touch_scrolled) {
+                s_selected = std::clamp(s_selected + rows - s_touch_scrolled, 0, item_count - 1);
+                if (s_touch_kind == HitKind::CategoryRow) {
+                    s_category_selected = s_selected;
+                }
+                s_touch_scrolled = rows;
+            }
+        }
+        return nav;
+    }
+
+    // released: a tap if it neither moved nor left where it started
+    s_touch_tracking = false;
+    const HitRegion* hit = HitTest(pos);
+    if (s_touch_moved || !hit || hit->kind != s_touch_kind || hit->index != s_touch_index) {
+        return nav;
+    }
+    switch (hit->kind) {
+    case HitKind::MenuRow:
+    case HitKind::OptionRow:
+        nav.accept = s_touch_started_selected;
+        break;
+    case HitKind::CategoryRow:
+        nav.right = s_touch_started_selected; // into its options
+        break;
+    case HitKind::StepLeft:
+        nav.left = true;
+        break;
+    case HitKind::StepRight:
+        nav.right = true;
+        break;
+    case HitKind::Back:
+        nav.cancel = true;
+        break;
+    case HitKind::Accept:
+        nav.accept = true;
+        break;
+    case HitKind::Panel:
+        break;
+    }
+    return nav;
+}
+
 } // namespace
 
 void SetVisible(bool visible) {
@@ -1912,6 +2163,9 @@ void SetVisible(bool visible) {
             RefreshLibrary();
         }
         OpenScreen(RootScreen());
+        s_hits.clear();
+        s_touch_tracking = false;
+        s_touch_ignore = true; // until the finger that may be down lifts
     } else if (!visible) {
         s_anim_timer = 0.0f;
         s_cheat_entries.clear();
@@ -2060,6 +2314,10 @@ void FeedNav(const NavInput& nav) {
     s_nav = nav;
 }
 
+void FeedTouch(const TouchInput& touch) {
+    s_touch = touch;
+}
+
 Action Render(int display_w, int display_h) {
     const float delta_time = ImGui::GetIO().DeltaTime;
     const ImVec2 display_size(static_cast<float>(display_w), static_cast<float>(display_h));
@@ -2071,14 +2329,26 @@ Action Render(int display_w, int display_h) {
         return Action::None;
     }
 
-    const NavInput nav = s_nav;
+    NavInput nav = s_nav;
     s_nav = {};
 
     s_anim_timer = std::min(s_anim_timer + delta_time, kAnimDuration);
     const float ease = EaseOutCubic(s_anim_timer / kAnimDuration);
 
     std::vector<MenuRow> rows = BuildRows();
-    const int item_count = static_cast<int>(rows.size());
+    int item_count = static_cast<int>(rows.size());
+    if (item_count > 0) {
+        s_selected = std::clamp(s_selected, 0, item_count - 1);
+    }
+    // only once the menu has slid in, so rows are hit where they are drawn
+    if (ease >= 1.0f) {
+        const MenuScreen before = s_menu;
+        nav = ApplyTouch(display_size, item_count, nav);
+        if (s_menu != before) {
+            rows = BuildRows();
+            item_count = static_cast<int>(rows.size());
+        }
+    }
     if (item_count > 0) {
         s_selected = std::clamp(s_selected, 0, item_count - 1);
         if (nav.up)
@@ -2117,6 +2387,7 @@ Action Render(int display_w, int display_h) {
         rows = BuildRows();
     }
 
+    s_hits.clear();
     RenderOverlayBackground(dl, display_size, ease);
     RenderTitleCard(dl, display_size, ease);
     if (s_menu == MenuScreen::SettingsCategories || s_menu == MenuScreen::SettingsOptions) {
