@@ -14,7 +14,8 @@
       "short_title": "GB",
       "extensions": [
         ".gb",
-        ".gbc"
+        ".gbc",
+        ".zip"
       ],
       "games_file": "gb.json",
       "retroachievements_id": 4,
@@ -31,7 +32,8 @@
       "short_title": "GBC",
       "extensions": [
         ".gb",
-        ".gbc"
+        ".gbc",
+        ".zip"
       ],
       "games_file": "gbc.json",
       "retroachievements_id": 6,

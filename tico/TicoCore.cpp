@@ -5,6 +5,7 @@
 
 #include "TicoCore.h"
 #include "TicoVulkan.h"
+#include <minizip/unzip.h>
 #include "TicoConfig.h"
 #include <algorithm>
 #include <json.hpp>
@@ -780,6 +781,88 @@ bool TicoCore::Init()
 // Game Loading
 //==============================================================================
 
+//==============================================================================
+// ROM files
+//==============================================================================
+
+static bool HasExtension(const std::string &name, const char *ext)
+{
+    const size_t n = strlen(ext);
+    if (name.size() < n)
+        return false;
+    for (size_t i = 0; i < n; ++i)
+        if (std::tolower((unsigned char)name[name.size() - n + i]) != ext[i])
+            return false;
+    return true;
+}
+
+bool TicoCore::IsZipPath(const std::string &path)
+{
+    return HasExtension(path, ".zip");
+}
+
+bool TicoCore::ReadRomFile(const std::string &path, std::vector<uint8_t> &out)
+{
+    FILE *fp = fopen(path.c_str(), "rb");
+    if (!fp)
+    {
+        tico_debug_log("ERROR: Failed to open file: %s", path.c_str());
+        return false;
+    }
+    fseek(fp, 0, SEEK_END);
+    const long fileSize = ftell(fp);
+    fseek(fp, 0, SEEK_SET);
+    if (fileSize <= 0)
+    {
+        fclose(fp);
+        tico_debug_log("ERROR: File is empty: %s", path.c_str());
+        return false;
+    }
+    out.resize((size_t)fileSize);
+    const size_t bytesRead = fread(out.data(), 1, out.size(), fp);
+    fclose(fp);
+    if (bytesRead != out.size())
+    {
+        tico_debug_log("ERROR: Short read: %zu of %zu bytes", bytesRead, out.size());
+        return false;
+    }
+    return true;
+}
+
+// The first .gb, .gbc or .dmg in the archive.
+bool TicoCore::ReadRomFromZip(const std::string &path, std::vector<uint8_t> &out)
+{
+    unzFile zip = unzOpen(path.c_str());
+    if (!zip)
+    {
+        tico_debug_log("ERROR: Not a readable zip: %s", path.c_str());
+        return false;
+    }
+    bool found = false;
+    for (int rc = unzGoToFirstFile(zip); rc == UNZ_OK && !found; rc = unzGoToNextFile(zip))
+    {
+        char name[512] = "";
+        unz_file_info info = {};
+        if (unzGetCurrentFileInfo(zip, &info, name, sizeof(name), nullptr, 0, nullptr, 0) != UNZ_OK)
+            continue;
+        const std::string entry = name;
+        if (!HasExtension(entry, ".gb") && !HasExtension(entry, ".gbc") && !HasExtension(entry, ".dmg"))
+            continue;
+        if (info.uncompressed_size == 0 || info.uncompressed_size > 64u * 1024u * 1024u)
+            continue;
+        if (unzOpenCurrentFile(zip) != UNZ_OK)
+            continue;
+        out.resize(info.uncompressed_size);
+        const int read = unzReadCurrentFile(zip, out.data(), (unsigned)out.size());
+        unzCloseCurrentFile(zip);
+        found = read == (int)out.size();
+        if (found)
+            tico_debug_log("Loaded %s from %s", entry.c_str(), path.c_str());
+    }
+    unzClose(zip);
+    return found;
+}
+
 bool TicoCore::LoadGame(const std::string &path)
 {
     tico_debug_log("=== TicoCore::LoadGame ===");
@@ -799,41 +882,28 @@ bool TicoCore::LoadGame(const std::string &path)
 
     tico_debug_log("Opening ROM file...");
 
-    // need_fullpath = false: load ROM into memory
-    FILE *fp = fopen(path.c_str(), "rb");
-    if (!fp)
+    // need_fullpath = false: load ROM into memory. A .zip holds the ROM, which
+    // the core needs unpacked.
+    if (IsZipPath(path))
     {
-        tico_debug_log("ERROR: Failed to open file: %s", path.c_str());
+        if (!ReadRomFromZip(path, m_romData))
+        {
+            tico_debug_log("ERROR: No Game Boy ROM found in %s", path.c_str());
+            return false;
+        }
+    }
+    else if (!ReadRomFile(path, m_romData))
+    {
         return false;
     }
-
-    fseek(fp, 0, SEEK_END);
-    size_t fileSize = ftell(fp);
-    fseek(fp, 0, SEEK_SET);
-
-    if (fileSize == 0)
-    {
-        fclose(fp);
-        tico_debug_log("ERROR: File is empty: %s", path.c_str());
-        return false;
-    }
-
-    tico_debug_log("ROM size: %zu bytes (%.1f MB)", fileSize, fileSize / (1024.0 * 1024.0));
-
-    std::vector<uint8_t> romData(fileSize);
-    size_t bytesRead = fread(romData.data(), 1, fileSize, fp);
-    fclose(fp);
-
-    if (bytesRead != fileSize)
-    {
-        tico_debug_log("ERROR: Short read: %zu of %zu bytes", bytesRead, fileSize);
-        return false;
-    }
+    tico_debug_log("ROM size: %zu bytes (%.1f MB)", m_romData.size(),
+                   m_romData.size() / (1024.0 * 1024.0));
 
     struct retro_game_info gameInfo = {};
     gameInfo.path = path.c_str();
-    gameInfo.data = romData.data();
-    gameInfo.size = fileSize;
+    gameInfo.data = m_romData.data();
+    gameInfo.size = m_romData.size();
+
 
     tico_debug_log("Calling retro_load_game...");
     tico_debug_log("  gameInfo.path = %s", gameInfo.path);
@@ -1691,7 +1761,9 @@ void TicoCore::RAIdentifyGame(rc_client_t* c, TicoCore* core)
     }
 
     tico_debug_log("RA: Identifying game... (Console ID: %u)", console_id);
-    rc_client_begin_identify_and_load_game(c, console_id, core->m_gamePath.c_str(), nullptr, 0,
+    // hashed from the loaded ROM, so a zipped game is recognized too
+    rc_client_begin_identify_and_load_game(c, console_id, core->m_gamePath.c_str(),
+        core->m_romData.empty() ? nullptr : core->m_romData.data(), core->m_romData.size(),
         [](int result, const char* error_message, rc_client_t* client, void* userdata) {
             TicoCore* core = (TicoCore*)userdata;
             if (result == RC_OK) {
