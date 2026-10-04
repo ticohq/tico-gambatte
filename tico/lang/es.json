@@ -20,7 +20,7 @@
     "emulator_rewind": "Rewind",
     "emulator_no_rewind_points": "Nothing to rewind to yet",
     "emulator_seconds_ago": "%d seconds ago",
-    "emulator_applies_next_launch": "Applies the next time the game starts",
+    "emulator_applies_next_launch": "Usa Reiniciar para aplicarlo",
     "emulator_state_saved": "Guardando estado en la ranura %d",
     "emulator_state_loaded": "Estado cargado de la ranura %d",
     "emulator_builtin_shaders": "Integrados",

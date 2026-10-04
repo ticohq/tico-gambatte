@@ -20,7 +20,7 @@
     "emulator_rewind": "Rewind",
     "emulator_no_rewind_points": "Nothing to rewind to yet",
     "emulator_seconds_ago": "%d seconds ago",
-    "emulator_applies_next_launch": "Applies the next time the game starts",
+    "emulator_applies_next_launch": "再起動で反映されます",
     "emulator_state_saved": "スロット%dにステートを保存中",
     "emulator_state_loaded": "スロット%dからステートをロードしました",
     "emulator_builtin_shaders": "内蔵",
