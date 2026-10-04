@@ -4,6 +4,7 @@
 #include "overlay/ra_alerts.h"
 
 #include "TicoCore.h"
+#include "TicoVulkan.h"
 
 #include <algorithm>
 #include <cmath>
@@ -27,7 +28,7 @@ void Render(TicoCore *core, ImDrawList *dl, ImVec2 displaySize, float deltaTime)
     return;
 
   // Lazy-load RA icon from SVG if not loaded yet
-  if (core->m_raIconTexture == 0) {
+  if (core->m_raIconTexture == ImTextureID_Invalid) {
     // Load ra.svg as texture using nanosvg (available in this TU)
     const char *svgPath = "romfs:/assets/ra.svg";
     NSVGimage *image = nsvgParseFromFile(svgPath, "px", 96);
@@ -39,15 +40,7 @@ void Render(TicoCore *core, ImDrawList *dl, ImVec2 displaySize, float deltaTime)
         unsigned char *img = (unsigned char *)malloc(w * h * 4);
         if (img) {
           nsvgRasterize(rast, image, 0, 0, sc, img, w, h, w * 4);
-          unsigned int tex = 0;
-          glGenTextures(1, &tex);
-          glBindTexture(GL_TEXTURE_2D, tex);
-          glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-          glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-          glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, w, h, 0, GL_RGBA,
-                       GL_UNSIGNED_BYTE, img);
-          glBindTexture(GL_TEXTURE_2D, 0);
-          core->m_raIconTexture = tex;
+          core->m_raIconTexture = TicoVulkan::CreateTextureRGBA(img, w, h);
           free(img);
         }
         nsvgDeleteRasterizer(rast);
@@ -98,7 +91,7 @@ void Render(TicoCore *core, ImDrawList *dl, ImVec2 displaySize, float deltaTime)
 
     // Lazy-resolve badge texture (may have been downloaded after notification
     // was pushed)
-    if (n.textureId == 0 && !n.badge_name.empty()) {
+    if (n.textureId == ImTextureID_Invalid && !n.badge_name.empty()) {
       if (n.badge_name == "ra_icon") {
         n.textureId = core->m_raIconTexture;
       } else {
@@ -145,7 +138,7 @@ void Render(TicoCore *core, ImDrawList *dl, ImVec2 displaySize, float deltaTime)
 
     // Badge image (left side)
     float textX = rectMin.x + padding;
-    if (n.textureId != 0) {
+    if (n.textureId != ImTextureID_Invalid) {
       float badgeX = rectMin.x + badgeMargin;
       float badgeY = rectMin.y + (alertH - badgeSize) * 0.5f;
 
@@ -163,7 +156,7 @@ void Render(TicoCore *core, ImDrawList *dl, ImVec2 displaySize, float deltaTime)
       ImVec2 bMin(drawBadgeX, drawBadgeY);
       ImVec2 bMax(drawBadgeX + drawBadgeSize, drawBadgeY + drawBadgeSize);
       ImU32 imgCol = IM_COL32(255, 255, 255, alpha);
-      dl->AddImageRounded((ImTextureID)(uintptr_t)n.textureId, bMin, bMax,
+      dl->AddImageRounded(n.textureId, bMin, bMax,
                           ImVec2(0, 0), ImVec2(1, 1), imgCol, badgeRadius);
 
       textX = badgeX + badgeSize + badgeMargin;

@@ -1,15 +1,14 @@
 /// @file TicoCore.h
 /// @brief Simplified libretro frontend for gambatte with tico overlay
-/// N64 has no disk control - single cartridge only
 #pragma once
 
 #include <string>
 #include <map>
 #include <cstdint>
-#include <EGL/egl.h>
 #include <SDL.h>
 #include <vector>
 #include "libretro.h"
+#include "imgui.h"
 
 #ifdef __SWITCH__
 #include <switch.h>
@@ -42,23 +41,11 @@ struct RANotification {
     std::string title;
     std::string description;
     std::string badge_name;     // badge identifier or "ra_icon" for session start
-    unsigned int textureId = 0; // GL texture for the badge (0 = no badge)
+    ImTextureID textureId = ImTextureID_Invalid; // badge texture
     float timer = 0.0f;
     float duration = 4.0f; // total display time
     float slideIn = 0.4f;  // slide-in duration
     float slideOut = 0.4f; // slide-out duration
-};
-
-/// @brief Available post-processing shader types
-enum class ShaderType
-{
-    None = 0,
-    LCD,
-    xBRZ,
-    Eagle,
-    Dot,
-    LcdGridV2,
-    COUNT
 };
 
 /// @brief Simplified libretro core wrapper for gambatte
@@ -80,6 +67,7 @@ public:
     const std::string& GetOSDMessage() const { return m_osdMessage; }
     int GetOSDFrames() const { return m_osdFrames; }
     void DecrementOSD() { if (m_osdFrames > 0) m_osdFrames--; }
+    void ShowOSD(const std::string &msg, int frames) { m_osdMessage = msg; m_osdFrames = frames; }
 
     /// @brief Unload current game
     void UnloadGame();
@@ -102,22 +90,16 @@ public:
     void ClearInputs();
 
     /// @brief Video/Audio info
-    unsigned int GetFrameTextureID() const {
-        return (m_activeShader != ShaderType::None && m_shaderTexture != 0) ? m_shaderTexture : m_frameTexture;
-    }
     float GetAspectRatio() const { return m_aspectRatio; }
     int GetFrameWidth() const { return m_frameWidth; }
     int GetFrameHeight() const { return m_frameHeight; }
-    int GetFBOWidth() const { return m_fboWidth; }
-    int GetFBOHeight() const { return m_fboHeight; }
     double GetFPS() const { return m_fps; }
     double GetSampleRate() const { return m_sampleRate; }
-    bool IsHWRender() const { return m_hwRender; }
 
-    /// @brief Shader pipeline
-    void InitShaderPipeline();
-    void SetShader(ShaderType type);
-    ShaderType GetShader() const { return m_activeShader; }
+    /// @brief Receives every new software frame from the core
+    typedef void (*VideoCallback_t)(const void *data, unsigned width, unsigned height,
+                                    size_t pitch, retro_pixel_format format);
+    void SetVideoCallback(VideoCallback_t cb) { m_videoCallback = cb; }
 
     /// @brief Get current game path
     std::string GetGamePath() const { return m_gamePath; }
@@ -130,9 +112,6 @@ public:
     /// changes a libretro variable, which the core re-reads next frame.
     void EnsureConfigLoaded() { LoadConfig(); }
     void SetOption(const std::string &key, const std::string &value);
-
-    /// @brief Set EGL contexts for HW rendering
-    void SetHWRenderContext(SDL_Window *window, EGLContext mainCtx, EGLContext hwCtx);
 
     /// @brief Audio callback types
     typedef void (*AudioSampleCallback_t)(int16_t left, int16_t right);
@@ -154,9 +133,6 @@ public:
 private:
     void InitializeCore();
     void SetupCallbacks();
-    bool InitEGLDualContext();
-    void BindHWContext(bool enable);
-    void DestroyHWRenderContext();
 
     void LoadSaveData();
     void SaveSaveData();
@@ -181,36 +157,15 @@ private:
     bool m_initialized = false;
     bool m_gameLoaded = false;
     bool m_paused = false;
-    bool m_hwRender = false;
     bool m_variablesUpdated = true;
     enum retro_pixel_format m_pixelFormat = RETRO_PIXEL_FORMAT_0RGB1555;
 
-    unsigned int m_frameTexture = 0;
-    unsigned int m_fbo = 0;
-    unsigned int m_fbo_rbo = 0;
-    int m_frameWidth = 640;
-    int m_frameHeight = 480;
-    int m_fboWidth = 0;
-    int m_fboHeight = 0;
+    int m_frameWidth = 160;
+    int m_frameHeight = 144;
     float m_aspectRatio = 4.0f / 3.0f;
     double m_fps = 60.0;
     double m_sampleRate = 44100.0;
-    void ResizeFBO(int width, int height);
-
-    // Shader post-processing pipeline
-    ShaderType m_activeShader = ShaderType::None;
-    unsigned int m_shaderFBO = 0;
-    unsigned int m_shaderTexture = 0;
-    unsigned int m_shaderProgram = 0;
-    unsigned int m_shaderVAO = 0;
-    unsigned int m_shaderVBO = 0;
-    int m_shaderTexWidth = 0;
-    int m_shaderTexHeight = 0;
-    bool m_shaderPipelineReady = false;
-    void ApplyShader(int srcWidth, int srcHeight);
-    void DestroyShaderPipeline();
-    unsigned int CompileShaderProgram(const char *vsSrc, const char *fsSrc);
-    // Shader sources are now free functions in TicoShaders.h
+    VideoCallback_t m_videoCallback = nullptr;
 
     AudioSampleCallback_t m_audioSampleCallback = nullptr;
     AudioSampleBatchCallback_t m_audioSampleBatchCallback = nullptr;
@@ -218,14 +173,6 @@ private:
 
     bool m_inputState[4][16] = {};
     int16_t m_analogState[4][2][2] = {};
-    int m_allocTexWidth = 0;
-    int m_allocTexHeight = 0;
-
-    SDL_Window *m_window = nullptr;
-    EGLDisplay m_eglDisplay = EGL_NO_DISPLAY;
-    EGLContext m_mainContext = EGL_NO_CONTEXT;
-    EGLContext m_hwContext = EGL_NO_CONTEXT;
-    EGLSurface m_eglSurface = EGL_NO_SURFACE;
 
     std::string m_systemDir;
     std::string m_saveDir;
@@ -260,11 +207,11 @@ public:
     void PushRANotification(const std::string& title, const std::string& desc,
                            const std::string& badge = "");
     
-    // RA badge cache (badge_name -> GL texture)
-    std::map<std::string, unsigned int> m_raBadgeCache;
-    unsigned int m_raIconTexture = 0;        // ra.svg icon
+    // RA badge cache (badge_name -> texture)
+    std::map<std::string, ImTextureID> m_raBadgeCache;
+    ImTextureID m_raIconTexture = ImTextureID_Invalid; // ra.svg icon
     void LoadRAIcon();                        // load ra.svg as texture
-    unsigned int GetRABadgeTexture(const std::string& badge_name);
+    ImTextureID GetRABadgeTexture(const std::string& badge_name);
     void DownloadAndCacheBadge(const std::string& badge_name); // runs on worker
     void PreloadRABadges();                   // called after game identification
     std::vector<std::pair<std::string, std::vector<unsigned char>>> m_raPendingBadgeUploads;

@@ -1,16 +1,21 @@
 /// @file TicoMain.cpp
 /// @brief Entry point for tico-integrated gambatte NRO
-/// Sets up SDL/EGL/ImGui and runs the main loop
+/// Sets up SDL/Vulkan/ImGui and runs the main loop
 
 #include "TicoCore.h"
 #include "TicoConfig.h"
 #include "TicoAudio.h"
+#include "TicoShaderChain.h"
+#include "TicoVulkan.h"
 #include "overlay/imgui_overlay.h"
 #include "overlay/overlay_ui.h"
 #include "overlay/tico_config.h"
 #include "overlay/translation_manager.h"
 
 #include <SDL.h>
+#include <dirent.h>
+#include <json.hpp>
+#include <strings.h>
 #include <algorithm>
 #include <cmath>
 #include <memory>
@@ -23,13 +28,10 @@
 
 #ifdef __SWITCH__
 #include <switch.h>
-#include "glad.h"
-#include <EGL/egl.h>
 #endif
 
 #include "imgui.h"
 #include "imgui_impl_sdl2.h"
-#include "imgui_impl_opengl3.h"
 
 //==============================================================================
 // NX System Configuration (extern "C")
@@ -48,12 +50,8 @@ size_t __nx_heap_size = 0;
 //==============================================================================
 
 static SDL_Window *g_window = nullptr;
-#ifndef __SWITCH__
-static SDL_GLContext g_glContext = nullptr;
-#endif
-static EGLDisplay g_eglDisplay = EGL_NO_DISPLAY;
-static EGLContext g_eglContext = EGL_NO_CONTEXT;
-static EGLSurface g_eglSurface = EGL_NO_SURFACE;
+static std::unique_ptr<TicoShaderChain> g_chain;
+static std::string g_activePreset = "\x01"; // forces the first load
 
 namespace OverlayUI = SwitchFrontend::OverlayUI;
 namespace ImGuiOverlay = SwitchFrontend::ImGuiOverlay;
@@ -122,21 +120,16 @@ static bool UpdateScreenMode()
     if (operationMode == g_lastOperationMode)
         return false;
 
-    if (operationMode == AppletOperationMode_Handheld)
-    {
-        nwindowSetCrop(nwindowGetDefault(), 0, 360, 1280, 1080);
-        LOG_INFO("DISPLAY", "Mode → Handheld (1280×720 crop)");
-        if (ImGui::GetCurrentContext()) {
-            ImGui::GetIO().FontGlobalScale = 1.0f;
-        }
-    }
-    else
-    {
-        nwindowSetCrop(nwindowGetDefault(), 0, 0, 1920, 1080);
-        LOG_INFO("DISPLAY", "Mode → Docked (1920×1080)");
-        if (ImGui::GetCurrentContext()) {
-            ImGui::GetIO().FontGlobalScale = 1.5f;
-        }
+    // Size the window to the mode and crop from the top-left, as tico-dolphin
+    // does, so the swapchain always matches what is on screen.
+    const bool handheld = operationMode == AppletOperationMode_Handheld;
+    const u32 w = handheld ? 1280 : 1920, h = handheld ? 720 : 1080;
+    nwindowSetDimensions(nwindowGetDefault(), w, h);
+    nwindowSetCrop(nwindowGetDefault(), 0, 0, w, h);
+    TicoVulkan::Resize(w, h);
+    LOG_INFO("DISPLAY", "Mode → %s (%ux%u)", handheld ? "Handheld" : "Docked", w, h);
+    if (ImGui::GetCurrentContext()) {
+        ImGui::GetIO().FontGlobalScale = handheld ? 1.0f : 1.5f;
     }
     g_lastOperationMode = operationMode;
     return true;
@@ -144,124 +137,7 @@ static bool UpdateScreenMode()
 #endif
 
 //==============================================================================
-// Simple Renderer (for when Tico Overlay is disabled)
-//==============================================================================
-struct SimpleGameRenderer
-{
-    GLuint vao = 0;
-    GLuint vbo = 0;
-    GLuint shaderProgram = 0;
-
-    void Init()
-    {
-        const char *vsSource =
-            "#version 330 core\n"
-            "layout (location = 0) in vec2 aPos;\n"
-            "layout (location = 1) in vec2 aTexCoord;\n"
-            "out vec2 TexCoord;\n"
-            "void main() {\n"
-            "   gl_Position = vec4(aPos.x, aPos.y, 0.0, 1.0);\n"
-            "   TexCoord = aTexCoord;\n"
-            "}\n";
-
-        const char *fsSource =
-            "#version 330 core\n"
-            "out vec4 FragColor;\n"
-            "in vec2 TexCoord;\n"
-            "uniform sampler2D texture1;\n"
-            "void main() {\n"
-            "   FragColor = texture(texture1, TexCoord);\n"
-            "}\n";
-
-        GLuint vertexShader = glCreateShader(GL_VERTEX_SHADER);
-        glShaderSource(vertexShader, 1, &vsSource, NULL);
-        glCompileShader(vertexShader);
-
-        GLuint fragmentShader = glCreateShader(GL_FRAGMENT_SHADER);
-        glShaderSource(fragmentShader, 1, &fsSource, NULL);
-        glCompileShader(fragmentShader);
-
-        shaderProgram = glCreateProgram();
-        glAttachShader(shaderProgram, vertexShader);
-        glAttachShader(shaderProgram, fragmentShader);
-        glLinkProgram(shaderProgram);
-
-        glDeleteShader(vertexShader);
-        glDeleteShader(fragmentShader);
-
-        float vertices[] = {
-            -1.0f, 1.0f, 0.0f, 1.0f,
-            1.0f, 1.0f, 1.0f, 1.0f,
-            1.0f, -1.0f, 1.0f, 0.0f,
-            -1.0f, -1.0f, 0.0f, 0.0f
-        };
-
-        glGenVertexArrays(1, &vao);
-        glGenBuffers(1, &vbo);
-
-        glBindVertexArray(vao);
-        glBindBuffer(GL_ARRAY_BUFFER, vbo);
-        glBufferData(GL_ARRAY_BUFFER, sizeof(vertices), vertices, GL_STATIC_DRAW);
-
-        glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 4 * sizeof(float), (void *)0);
-        glEnableVertexAttribArray(0);
-
-        glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, 4 * sizeof(float), (void *)(2 * sizeof(float)));
-        glEnableVertexAttribArray(1);
-
-        glBindBuffer(GL_ARRAY_BUFFER, 0);
-        glBindVertexArray(0);
-    }
-
-    void Render(GLuint textureID, int winW, int winH, float contentAR)
-    {
-        float winAR = (float)winW / (float)winH;
-        float scaleX = 1.0f, scaleY = 1.0f;
-
-        if (winAR > contentAR)
-        {
-            scaleX = contentAR / winAR;
-        }
-        else
-        {
-            scaleY = winAR / contentAR;
-        }
-
-        glUseProgram(shaderProgram);
-
-        float vX = scaleX;
-        float vY = scaleY;
-
-        float vertices[] = {
-            -vX, vY, 0.0f, 1.0f,
-            vX, vY, 1.0f, 1.0f,
-            vX, -vY, 1.0f, 0.0f,
-            -vX, -vY, 0.0f, 0.0f};
-
-        glBindBuffer(GL_ARRAY_BUFFER, vbo);
-        glBufferData(GL_ARRAY_BUFFER, sizeof(vertices), vertices, GL_DYNAMIC_DRAW);
-        glBindBuffer(GL_ARRAY_BUFFER, 0);
-
-        glActiveTexture(GL_TEXTURE0);
-        glBindTexture(GL_TEXTURE_2D, textureID);
-
-        glBindVertexArray(vao);
-        glDrawArrays(GL_TRIANGLE_FAN, 0, 4);
-        glBindVertexArray(0);
-    }
-
-    void Shutdown()
-    {
-        glDeleteVertexArrays(1, &vao);
-        glDeleteBuffers(1, &vbo);
-        glDeleteProgram(shaderProgram);
-    }
-};
-
-static SimpleGameRenderer g_simpleRenderer;
-
-//==============================================================================
-// SDL/EGL Initialization
+// SDL/Vulkan Initialization
 //==============================================================================
 
 static void CloseControllers()
@@ -316,7 +192,14 @@ static void GetDisplayResolution(int &w, int &h)
         h = 1080;
     }
 #else
-    if (g_window)
+    uint32_t sw = 0, sh = 0;
+    TicoVulkan::GetSwapExtent(sw, sh);
+    if (sw && sh)
+    {
+        w = (int)sw;
+        h = (int)sh;
+    }
+    else if (g_window)
         SDL_GetWindowSize(g_window, &w, &h);
     else
     {
@@ -347,116 +230,17 @@ bool InitWindow()
     GetDisplayResolution(w, h);
     LOG_INFO("HOME", "Switch Resolution: %dx%d (logical)", w, h);
 
-    // Initialize EGL
-    g_eglDisplay = eglGetDisplay(EGL_DEFAULT_DISPLAY);
-    if (g_eglDisplay == EGL_NO_DISPLAY)
-    {
-        LOG_ERROR("EGL", "eglGetDisplay failed");
-        return false;
-    }
-
-    EGLint major, minor;
-    if (!eglInitialize(g_eglDisplay, &major, &minor))
-    {
-        LOG_ERROR("EGL", "eglInitialize failed");
-        return false;
-    }
-    LOG_INFO("EGL", "EGL %d.%d initialized", major, minor);
-
-    EGLConfig config;
-    EGLint numConfigs;
-    const EGLint configAttribs[] = {
-        EGL_SURFACE_TYPE, EGL_WINDOW_BIT,
-        EGL_RENDERABLE_TYPE, EGL_OPENGL_BIT,
-        EGL_RED_SIZE, 8,
-        EGL_GREEN_SIZE, 8,
-        EGL_BLUE_SIZE, 8,
-        EGL_ALPHA_SIZE, 8,
-        EGL_DEPTH_SIZE, 24,
-        EGL_STENCIL_SIZE, 8,
-        EGL_NONE};
-
-    if (!eglChooseConfig(g_eglDisplay, configAttribs, &config, 1, &numConfigs))
-    {
-        LOG_ERROR("EGL", "eglChooseConfig failed");
-        return false;
-    }
-
-    g_eglSurface = eglCreateWindowSurface(g_eglDisplay, config,
-                                          nwindowGetDefault(), NULL);
-    if (g_eglSurface == EGL_NO_SURFACE)
-    {
-        LOG_ERROR("EGL", "eglCreateWindowSurface failed");
-        return false;
-    }
-
-    eglBindAPI(EGL_OPENGL_API);
-    const EGLint contextAttribs[] = {
-        EGL_CONTEXT_MAJOR_VERSION, 4,
-        EGL_CONTEXT_MINOR_VERSION, 3,
-        EGL_CONTEXT_OPENGL_PROFILE_MASK, EGL_CONTEXT_OPENGL_CORE_PROFILE_BIT,
-        EGL_NONE};
-
-    g_eglContext = eglCreateContext(g_eglDisplay, config, EGL_NO_CONTEXT, contextAttribs);
-    if (g_eglContext == EGL_NO_CONTEXT)
-    {
-        LOG_ERROR("EGL", "eglCreateContext failed");
-        return false;
-    }
-
-    if (!eglMakeCurrent(g_eglDisplay, g_eglSurface, g_eglSurface, g_eglContext))
-    {
-        LOG_ERROR("EGL", "eglMakeCurrent failed");
-        return false;
-    }
-
-    if (!gladLoadGLLoader((GLADloadproc)eglGetProcAddress))
-    {
-        LOG_ERROR("HOME", "gladLoadGLLoader failed");
-        return false;
-    }
-
-    eglSwapInterval(g_eglDisplay, 1);
-    LOG_INFO("EGL", "VSync enabled (eglSwapInterval=1) — swap is the sole frame governor");
-
-    LOG_INFO("HOME", "OpenGL %s initialized", glGetString(GL_VERSION));
-
 #else
-    SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 3);
-    SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 3);
-    SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_CORE);
-    SDL_GL_SetAttribute(SDL_GL_DOUBLEBUFFER, 1);
-    SDL_GL_SetAttribute(SDL_GL_DEPTH_SIZE, 24);
-    SDL_GL_SetAttribute(SDL_GL_STENCIL_SIZE, 8);
-
     g_window = SDL_CreateWindow("gambatte",
                                 SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,
                                 TicoConfig::WINDOW_WIDTH, TicoConfig::WINDOW_HEIGHT,
-                                SDL_WINDOW_OPENGL | SDL_WINDOW_SHOWN);
+                                SDL_WINDOW_VULKAN | SDL_WINDOW_RESIZABLE | SDL_WINDOW_SHOWN);
 
     if (!g_window)
     {
         LOG_ERROR("HOME", "SDL_CreateWindow failed: %s", SDL_GetError());
         return false;
     }
-
-    g_glContext = SDL_GL_CreateContext(g_window);
-    if (!g_glContext)
-    {
-        LOG_ERROR("HOME", "SDL_GL_CreateContext failed: %s", SDL_GetError());
-        return false;
-    }
-
-    SDL_GL_MakeCurrent(g_window, g_glContext);
-    SDL_GL_SetSwapInterval(1);
-
-    if (!gladLoadGLLoader((GLADloadproc)SDL_GL_GetProcAddress))
-    {
-        LOG_ERROR("HOME", "gladLoadGLLoader failed");
-        return false;
-    }
-
-    LOG_INFO("HOME", "OpenGL %s initialized", glGetString(GL_VERSION));
 #endif
 
     if (TicoConfig::USE_SDLQUEUEAUDIO)
@@ -504,6 +288,13 @@ static size_t AudioSampleBatchCallback(const int16_t *data, size_t frames)
     return g_audio.PushSamples(data, frames);
 }
 
+static void VideoCallback(const void *data, unsigned width, unsigned height, size_t pitch,
+                          retro_pixel_format format)
+{
+    if (g_chain)
+        g_chain->SetSourceFrame(data, width, height, pitch, format);
+}
+
 static void AudioFlushCallback()
 {
     g_audio.Flush();
@@ -521,13 +312,18 @@ bool InitImGui()
     io.ConfigFlags |= ImGuiConfigFlags_NavEnableGamepad;
     LOG_INFO("HOME", "ImGui context created");
 
-#ifdef __SWITCH__
-    ImGui_ImplSDL2_InitForOpenGL(g_window, nullptr);
-    ImGui_ImplOpenGL3_Init("#version 430 core");
-#else
-    ImGui_ImplSDL2_InitForOpenGL(g_window, g_glContext);
-    ImGui_ImplOpenGL3_Init("#version 330 core");
+    // Switch has no SDL window and the overlay reads the pads itself, so the
+    // SDL platform backend is desktop-only.
+#ifndef __SWITCH__
+    ImGui_ImplSDL2_InitForVulkan(g_window);
 #endif
+    int w, h;
+    GetDisplayResolution(w, h);
+    if (!TicoVulkan::Init(g_window, (uint32_t)w, (uint32_t)h))
+    {
+        LOG_ERROR("HOME", "Vulkan initialization failed");
+        return false;
+    }
     LOG_INFO("HOME", "ImGui backends initialized");
 
 #ifdef __SWITCH__
@@ -549,13 +345,13 @@ bool InitImGui()
     // Load secondary font for RA alert descriptions
     io.Fonts->AddFontFromFileTTF("romfs:/fonts/description.ttf", TicoConfig::FONT_SIZE * 0.75f);
 #else
-    if (!io.Fonts->AddFontFromFileTTF("assets/fonts/font.ttf", TicoConfig::FONT_SIZE))
+    if (!io.Fonts->AddFontFromFileTTF("tico/fonts/font.ttf", TicoConfig::FONT_SIZE))
     {
-        LOG_ERROR("HOME", "Failed to load ImGui font from assets/fonts/font.ttf");
+        LOG_ERROR("HOME", "Failed to load ImGui font from tico/fonts/font.ttf");
         return false;
     }
     // Load secondary font for RA alert descriptions
-    io.Fonts->AddFontFromFileTTF("assets/fonts/description.ttf", TicoConfig::FONT_SIZE * 0.75f);
+    io.Fonts->AddFontFromFileTTF("tico/fonts/description.ttf", TicoConfig::FONT_SIZE * 0.75f);
 #endif
 
     LOG_INFO("HOME", "ImGui initialized");
@@ -566,34 +362,13 @@ void CleanupWindow()
 {
     CloseControllers();
 
-    glFinish();
-
-    ImGui_ImplOpenGL3_Shutdown();
+    g_chain.reset();
+    TicoSlang::Shutdown();
+    TicoVulkan::Shutdown();
+#ifndef __SWITCH__
     ImGui_ImplSDL2_Shutdown();
-    ImGui::DestroyContext();
-
-#ifdef __SWITCH__
-    if (g_eglContext != EGL_NO_CONTEXT)
-    {
-        eglMakeCurrent(g_eglDisplay, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT);
-        eglDestroyContext(g_eglDisplay, g_eglContext);
-    }
-    if (g_eglSurface != EGL_NO_SURFACE)
-    {
-        eglDestroySurface(g_eglDisplay, g_eglSurface);
-    }
-    if (g_eglDisplay != EGL_NO_DISPLAY)
-    {
-        eglTerminate(g_eglDisplay);
-    }
-
-    eglReleaseThread();
-#else
-    if (g_glContext)
-    {
-        SDL_GL_DeleteContext(g_glContext);
-    }
 #endif
+    ImGui::DestroyContext();
 
     if (g_window)
     {
@@ -612,7 +387,9 @@ void ProcessEvents()
     SDL_Event event;
     while (SDL_PollEvent(&event))
     {
+#ifndef __SWITCH__
         ImGui_ImplSDL2_ProcessEvent(&event);
+#endif
 
         if (event.type == SDL_QUIT)
         {
@@ -685,15 +462,259 @@ static std::string StatePath(int slot)
     return dir + romName + ".state" + std::to_string(slot);
 }
 
-static ShaderType ShaderFromSettings()
+//==============================================================================
+// Shaders
+//==============================================================================
+
+#ifdef __SWITCH__
+static const char *kBuiltinShaderDir = "romfs:/shaders/";
+static const char *kUserShaderDir = "sdmc:/tico/shaders/";
+#else
+static const char *kBuiltinShaderDir = "tico/shaders/";
+static const char *kUserShaderDir = "shaders/";
+#endif
+
+// The built-ins, with the names the menu shows for them.
+static const std::pair<const char *, const char *> kBuiltinShaders[] = {
+    {"lcd.slangp", "LCD"},
+    {"lcd-grid-v2.slangp", "LCD Grid"},
+    {"dot.slangp", "Dot Matrix"},
+    {"xbrz.slangp", "xBRZ"},
+    {"eagle.slangp", "Eagle"},
+    {"crt-easymode.slangp", "CRT Easy Mode"},
+};
+
+static bool EndsWith(const std::string &s, const char *suffix)
 {
-    const std::string shader = OverlayConfig::GetConfigValue("shader_type", "None");
-    if (shader == "LCD") return ShaderType::LCD;
-    if (shader == "xBRZ") return ShaderType::xBRZ;
-    if (shader == "Eagle") return ShaderType::Eagle;
-    if (shader == "Dot") return ShaderType::Dot;
-    if (shader == "LcdGridV2") return ShaderType::LcdGridV2;
-    return ShaderType::None;
+    const size_t n = strlen(suffix);
+    return s.size() >= n && s.compare(s.size() - n, n, suffix) == 0;
+}
+
+static std::string ShaderPreset()
+{
+    return OverlayConfig::GetConfigValue("shader_preset", "");
+}
+
+static void SetShaderPreset(const std::string &path)
+{
+    OverlayConfig::SetConfigValue("shader_preset", path);
+    OverlayConfig::SaveConfig();
+}
+
+// Settings from before slang presets picked one of the old GL shaders.
+static void MigrateShaderSetting()
+{
+    if (OverlayConfig::GetConfigValue("shader_preset", "\x01") != "\x01")
+        return; // already chosen, "" included
+    static const std::pair<const char *, const char *> kOld[] = {
+        {"LCD", "lcd.slangp"}, {"xBRZ", "xbrz.slangp"}, {"Eagle", "eagle.slangp"},
+        {"Dot", "dot.slangp"}, {"LcdGridV2", "lcd-grid-v2.slangp"},
+    };
+    const std::string old = OverlayConfig::GetConfigValue("shader_type", "None");
+    for (const auto &entry : kOld)
+        if (old == entry.first)
+            SetShaderPreset(kBuiltinShaderDir + std::string(entry.second));
+}
+
+static std::string ShaderPresetLabel()
+{
+    const std::string preset = ShaderPreset();
+    if (preset.empty())
+        return std::string();
+    for (const auto &builtin : kBuiltinShaders)
+        if (preset == kBuiltinShaderDir + std::string(builtin.first))
+            return builtin.second;
+    std::string name = preset;
+    const size_t slash = name.find_last_of('/');
+    if (slash != std::string::npos)
+        name = name.substr(slash + 1);
+    return EndsWith(name, ".slangp") ? name.substr(0, name.size() - 7) : name;
+}
+
+// The browser: the user folder lists the built-ins first, every other folder
+// its parent; then subfolders and presets, by name.
+static std::vector<OverlayUI::ShaderBrowseEntry> BrowseShaders(std::string dir)
+{
+    using Entry = OverlayUI::ShaderBrowseEntry;
+    if (dir.empty() || dir.back() != '/')
+        dir += '/';
+    std::vector<Entry> entries;
+    if (dir == kUserShaderDir)
+    {
+        entries.push_back({"> " + SwitchFrontend::OverlayTranslation::tr("emulator_builtin_shaders"),
+                           kBuiltinShaderDir, true});
+        entries.push_back({SwitchFrontend::OverlayTranslation::tr("emulator_none"), "", false});
+    }
+    else
+    {
+        std::string parent = kUserShaderDir;
+        if (dir != kBuiltinShaderDir)
+        {
+            const std::string d = dir.substr(0, dir.size() - 1);
+            const size_t slash = d.find_last_of('/');
+            if (slash != std::string::npos)
+                parent = d.substr(0, slash + 1);
+        }
+        entries.push_back({"..", parent, true});
+    }
+    if (dir == kBuiltinShaderDir)
+    {
+        for (const auto &builtin : kBuiltinShaders)
+            entries.push_back({builtin.second, dir + builtin.first, false});
+        return entries;
+    }
+
+    std::vector<Entry> dirs, files;
+    if (DIR *d = opendir(dir.c_str()))
+    {
+        while (struct dirent *e = readdir(d))
+        {
+            const std::string name = e->d_name;
+            if (name.empty() || name[0] == '.')
+                continue;
+            const std::string path = dir + name;
+            bool isDir = e->d_type == DT_DIR;
+            if (e->d_type == DT_UNKNOWN)
+            {
+                struct stat st;
+                isDir = stat(path.c_str(), &st) == 0 && S_ISDIR(st.st_mode);
+            }
+            if (isDir)
+                dirs.push_back({name + "/", path + "/", true});
+            else if (EndsWith(name, ".slangp"))
+                files.push_back({name.substr(0, name.size() - 7), path, false});
+        }
+        closedir(d);
+    }
+    auto byName = [](const Entry &a, const Entry &b) {
+        return strcasecmp(a.label.c_str(), b.label.c_str()) < 0;
+    };
+    std::sort(dirs.begin(), dirs.end(), byName);
+    std::sort(files.begin(), files.end(), byName);
+    entries.insert(entries.end(), dirs.begin(), dirs.end());
+    entries.insert(entries.end(), files.begin(), files.end());
+    return entries;
+}
+
+// Parameter overrides per preset, in gambatte.jsonc's shader_parameters.
+static nlohmann::json ShaderParameterOverrides()
+{
+    const std::string text = OverlayConfig::GetConfigJson("shader_parameters");
+    nlohmann::json j = text.empty() ? nlohmann::json::object()
+                                    : nlohmann::json::parse(text, nullptr, false);
+    return j.is_object() ? j : nlohmann::json::object();
+}
+
+static void SaveShaderParameterOverrides(const nlohmann::json &j)
+{
+    OverlayConfig::SetConfigJson("shader_parameters", j.dump());
+    OverlayConfig::SaveConfig();
+}
+
+// A preset just loaded: start from its defaults, then the saved overrides.
+static void OnShaderLoaded()
+{
+    if (!g_chain)
+        return;
+    g_chain->ResetParameters();
+    const nlohmann::json overrides = ShaderParameterOverrides();
+    const auto it = overrides.find(ShaderPreset());
+    if (it == overrides.end() || !it->is_object())
+        return;
+    for (const auto &param : it->items())
+        if (param.value().is_number())
+            g_chain->SetParameter(param.key(), param.value().get<float>());
+}
+
+static void SetShaderParameter(const std::string &id, float value)
+{
+    if (!g_chain)
+        return;
+    g_chain->SetParameter(id, value);
+    nlohmann::json overrides = ShaderParameterOverrides();
+    nlohmann::json &preset = overrides[ShaderPreset()];
+    if (!preset.is_object())
+        preset = nlohmann::json::object();
+    for (const TicoSlang::Parameter &p : g_chain->Parameters())
+    {
+        if (p.id != id)
+            continue;
+        const float step = p.step > 0.0f ? p.step : 0.01f;
+        if (std::fabs(value - p.initial) < step * 0.5f)
+            preset.erase(id);
+        else
+            preset[id] = value;
+    }
+    if (preset.empty())
+        overrides.erase(ShaderPreset());
+    SaveShaderParameterOverrides(overrides);
+}
+
+static void ResetShaderParameters()
+{
+    if (g_chain)
+        g_chain->ResetParameters();
+    nlohmann::json overrides = ShaderParameterOverrides();
+    overrides.erase(ShaderPreset());
+    SaveShaderParameterOverrides(overrides);
+}
+
+static void RegisterShaderMenu()
+{
+    OverlayUI::ShaderCallbacks callbacks;
+    callbacks.preset_label = [] { return ShaderPresetLabel(); };
+    callbacks.browse_start = [] {
+        const std::string preset = ShaderPreset();
+        const size_t slash = preset.find_last_of('/');
+        return slash == std::string::npos ? std::string(kUserShaderDir) : preset.substr(0, slash + 1);
+    };
+    callbacks.browse = [](const std::string &dir) { return BrowseShaders(dir); };
+    callbacks.select = [](const std::string &path) { SetShaderPreset(path); };
+    callbacks.parameters = [] {
+        std::vector<OverlayUI::ShaderParameter> out;
+        if (g_chain)
+            for (const TicoSlang::Parameter &p : g_chain->Parameters())
+                out.push_back({p.id, p.description, p.value, p.minimum, p.maximum, p.step});
+        return out;
+    };
+    callbacks.set_parameter = [](const std::string &id, float value) { SetShaderParameter(id, value); };
+    callbacks.reset_parameters = [] { ResetShaderParameters(); };
+    OverlayUI::SetShaderCallbacks(std::move(callbacks));
+}
+
+// Loads the preset the settings name once it differs from the active one.
+// Compiling can take a while on the Switch, so the frame before it shows a
+// toast instead of the screen just freezing.
+static void ApplyShaderPreset()
+{
+    const std::string wanted = ShaderPreset();
+    if (!g_chain || wanted == g_activePreset)
+        return;
+    static std::string announced;
+    if (announced != wanted && !wanted.empty())
+    {
+        announced = wanted;
+        OverlayUI::ShowToast(SwitchFrontend::OverlayTranslation::tr("emulator_loading_shader"),
+                             OverlayUI::ToastCorner::TopRight);
+        return;
+    }
+    announced.clear();
+    std::string error;
+    if (g_chain->LoadPreset(wanted, error))
+    {
+        g_activePreset = wanted;
+        OnShaderLoaded();
+        return;
+    }
+    LOG_ERROR("SHADER", "Cannot load %s: %s", wanted.c_str(), error.c_str());
+    const std::string firstLine = error.substr(0, error.find('\n'));
+    OverlayUI::ShowToast(SwitchFrontend::OverlayTranslation::tr("emulator_shader_failed") + ": " +
+                             firstLine.substr(0, 80),
+                         OverlayUI::ToastCorner::TopRight);
+    // Keep showing (and saving) what actually runs.
+    if (g_activePreset == "\x01")
+        g_activePreset.clear();
+    SetShaderPreset(g_activePreset);
 }
 
 // settings.json is the one settings definition: every core option it lists
@@ -705,7 +726,6 @@ static void ApplySettingsToCore()
     OverlayConfig::ApplyToCore([](const std::string &key, const std::string &value) {
         g_core->SetOption(key, value);
     });
-    g_core->SetShader(ShaderFromSettings());
 }
 
 static std::string TrFormat(const char *key, int value)
@@ -847,21 +867,14 @@ static void UpdateHud(float deltaTime)
     OverlayUI::SetHudStats(stats);
 }
 
-// The game image, placed by the Display tab: Integer scales the frame by 1x,
-// 2x or the largest that fits ("Auto"); Display fits an aspect ratio (4:3,
-// 16:9, the core's own "Original") or stretches.
-static void DrawGame(ImDrawList *dl, ImVec2 displaySize)
+// The game's on-screen rectangle, from the Display tab: Integer scales the
+// frame by 1x, 2x or the largest that fits ("Auto"); Display fits an aspect
+// ratio (4:3, 16:9, the core's own "Original") or stretches.
+static ImVec4 ComputeGameRect(ImVec2 displaySize)
 {
-    if (!g_core)
-        return;
-    const unsigned int texture = g_core->GetFrameTextureID();
-    if (texture == 0)
-        return;
-    const int width = g_core->GetFrameWidth();
-    const int height = g_core->GetFrameHeight();
-    const int fboWidth = g_core->GetFBOWidth();
-    const int fboHeight = g_core->GetFBOHeight();
-    const float aspectRatio = g_core->GetAspectRatio();
+    const int width = g_core ? g_core->GetFrameWidth() : 160;
+    const int height = g_core ? g_core->GetFrameHeight() : 144;
+    const float aspectRatio = g_core ? g_core->GetAspectRatio() : 160.0f / 144.0f;
     const std::string mode = OverlayConfig::GetConfigValue("display_mode", "Integer");
     const std::string size = OverlayConfig::GetConfigValue("display_size", "Auto");
 
@@ -902,17 +915,22 @@ static void DrawGame(ImDrawList *dl, ImVec2 displaySize)
     }
     dstWidth = std::floor(dstWidth);
     dstHeight = std::floor(dstHeight);
-    const float offsetX = std::floor((displaySize.x - dstWidth) / 2.0f);
-    const float offsetY = std::floor((displaySize.y - dstHeight) / 2.0f);
+    return ImVec4(std::floor((displaySize.x - dstWidth) / 2.0f),
+                  std::floor((displaySize.y - dstHeight) / 2.0f), dstWidth, dstHeight);
+}
 
+// Runs the shader chain at the game's on-screen size and draws its output.
+static void DrawGame(VkCommandBuffer cmd, ImDrawList *dl, ImVec2 displaySize)
+{
     dl->AddRectFilled(ImVec2(0, 0), displaySize, IM_COL32(0, 0, 0, 255));
-    const float uMax = (fboWidth > 0 && width > 0) ? (float)width / fboWidth : 1.0f;
-    const float vMax = (fboHeight > 0 && height > 0) ? (float)height / fboHeight : 1.0f;
-    const float halfU = (fboWidth > 0) ? 0.5f / fboWidth : 0.0f;
-    const float halfV = (fboHeight > 0) ? 0.5f / fboHeight : 0.0f;
-    dl->AddImage((ImTextureID)(intptr_t)texture, ImVec2(offsetX, offsetY),
-                 ImVec2(offsetX + dstWidth, offsetY + dstHeight), ImVec2(halfU, halfV),
-                 ImVec2(uMax - halfU, vMax - halfV));
+    const ImVec4 rect = ComputeGameRect(displaySize);
+    if (!g_chain || !cmd || rect.z < 1.0f || rect.w < 1.0f)
+        return;
+    const float ar = g_core ? g_core->GetAspectRatio() : 160.0f / 144.0f;
+    const ImTextureID tex = g_chain->Process(cmd, (uint32_t)rect.z, (uint32_t)rect.w, ar,
+                                             g_core ? g_core->GetFPS() : 60.0);
+    if (tex != ImTextureID_Invalid)
+        dl->AddImage(tex, ImVec2(rect.x, rect.y), ImVec2(rect.x + rect.z, rect.y + rect.w));
 }
 
 void HandleInput()
@@ -1052,11 +1070,16 @@ void Render()
         LOG_DEBUG("RENDER", "Frame %d: Render starting", frameCount);
     }
 
-    ImGui_ImplOpenGL3_NewFrame();
-
 #ifdef __SWITCH__
     UpdateScreenMode();
+#endif
 
+    // Waits for this frame slot's previous submission, so everything below
+    // may reuse per-frame resources. A skipped frame (swapchain being
+    // recreated) still runs the core so emulation keeps its pace.
+    VkCommandBuffer cmd = TicoVulkan::BeginFrame();
+
+#ifdef __SWITCH__
     ImGuiIO &io = ImGui::GetIO();
     int logW, logH;
     GetDisplayResolution(logW, logH);
@@ -1064,6 +1087,10 @@ void Render()
     io.DeltaTime = 1.0f / 60.0f;
 #else
     ImGui_ImplSDL2_NewFrame();
+    int logW, logH;
+    GetDisplayResolution(logW, logH);
+    ImGui::GetIO().DisplaySize = ImVec2((float)logW, (float)logH);
+    ImGui::GetIO().DisplayFramebufferScale = ImVec2(1.0f, 1.0f);
 #endif
     ImGui::NewFrame();
 
@@ -1078,11 +1105,8 @@ void Render()
         g_core->RunFrame();
     }
 
-    glViewport(0, 0, w, h);
-    glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
-    glClear(GL_COLOR_BUFFER_BIT);
-
-    DrawGame(ImGui::GetBackgroundDrawList(), displaySize);
+    ApplyShaderPreset();
+    DrawGame(cmd, ImGui::GetBackgroundDrawList(), displaySize);
     UpdateHud(ImGui::GetIO().DeltaTime);
     ImGuiOverlay::Draw(g_core.get(), displaySize.x, displaySize.y, ImGui::GetIO().DeltaTime);
 
@@ -1117,13 +1141,8 @@ void Render()
     }
 
     ImGui::Render();
-    ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
-
-#ifdef __SWITCH__
-    eglSwapBuffers(g_eglDisplay, g_eglSurface);
-#else
-    SDL_GL_SwapWindow(g_window);
-#endif
+    if (cmd)
+        TicoVulkan::EndFrame(ImGui::GetDrawData());
 }
 
 //==============================================================================
@@ -1181,14 +1200,6 @@ int main(int argc, char *argv[])
     PinCurrentThreadToCore(2, "main/render");
 #endif
 
-    glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
-    glClear(GL_COLOR_BUFFER_BIT);
-#ifdef __SWITCH__
-    eglSwapBuffers(g_eglDisplay, g_eglSurface);
-#else
-    SDL_GL_SwapWindow(g_window);
-#endif
-
     LOG_INFO("HOME", "Calling InitImGui...");
     if (!InitImGui())
     {
@@ -1198,6 +1209,13 @@ int main(int argc, char *argv[])
         return 1;
     }
     LOG_INFO("HOME", "InitImGui succeeded");
+
+    g_chain = std::make_unique<TicoShaderChain>();
+    if (!g_chain->Init())
+    {
+        LOG_ERROR("HOME", "Shader chain initialization failed");
+        g_chain.reset();
+    }
 #ifdef __SWITCH__
     g_lastOperationMode = 255;
 #endif
@@ -1236,6 +1254,7 @@ int main(int argc, char *argv[])
     ApplySettingsToCore();
 
     g_core->SetAudioCallbacks(AudioSampleCallback, AudioSampleBatchCallback, AudioFlushCallback);
+    g_core->SetVideoCallback(VideoCallback);
 
     if (!g_audio.Init(g_audioDevice))
     {
@@ -1247,6 +1266,8 @@ int main(int argc, char *argv[])
         struct stat st;
         return slot >= 1 && stat(StatePath(slot - 1).c_str(), &st) == 0;
     });
+    MigrateShaderSetting();
+    RegisterShaderMenu();
     OverlayUI::ReloadSettings();
     LOG_INFO("HOME", "Core and overlay created");
 
@@ -1271,13 +1292,11 @@ int main(int argc, char *argv[])
     {
         g_audio.SetCoreSampleRate(g_core->GetSampleRate());
         LOG_INFO("AUDIO", "Configured audio pipeline for %.0f Hz core output", g_core->GetSampleRate());
-        g_core->InitShaderPipeline();
-        g_core->SetShader(ShaderFromSettings());
     }
 
-    // Frame pacing is handled entirely by vsync (eglSwapBuffers with
-    // eglSwapInterval=1). Audio is non-blocking, so the swap is the only governor.
-    // While fast-forwarding we drop to swapInterval=0 so the loop is uncapped.
+    // Frame pacing is handled entirely by vsync (FIFO presentation). Audio is
+    // non-blocking, so presentation is the only governor. While fast-forwarding
+    // the swapchain switches to an uncapped present mode.
     bool lastFastForward = false;
 
     while (g_running)
@@ -1294,12 +1313,7 @@ int main(int argc, char *argv[])
         bool fastForward = g_audio.IsFastForwarding();
         if (fastForward != lastFastForward)
         {
-            int interval = fastForward ? 0 : 1;
-#ifdef __SWITCH__
-            eglSwapInterval(g_eglDisplay, interval);
-#else
-            SDL_GL_SetSwapInterval(interval);
-#endif
+            TicoVulkan::SetVsync(!fastForward);
             lastFastForward = fastForward;
         }
 
@@ -1309,7 +1323,9 @@ int main(int argc, char *argv[])
     }
 
     LOG_INFO("HOME", "Starting cleanup...");
+    TicoVulkan::WaitIdle();
     OverlayUI::SetSlotOccupiedCallback(nullptr);
+    OverlayUI::SetShaderCallbacks({});
     ImGuiOverlay::Shutdown();
     g_core.reset();
 

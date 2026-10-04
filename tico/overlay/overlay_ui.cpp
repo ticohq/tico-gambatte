@@ -46,6 +46,7 @@ enum class MenuScreen {
     Cheats,
     SettingsCategories,
     SettingsOptions,
+    ShaderBrowser,
 };
 
 enum class QuickItem {
@@ -94,6 +95,9 @@ std::vector<CheatMenuEntry> s_cheat_entries;
 std::vector<DiscMenuEntry> s_disc_entries;
 std::array<bool, kOverlaySlotCount> s_slot_occupied{};
 std::vector<int> s_rewind_points;
+ShaderCallbacks s_shader_cb;
+std::string s_browse_dir;
+std::vector<ShaderBrowseEntry> s_browse_entries;
 
 // Results the emulation thread collects: the overlay renders on the
 // presentation thread and never touches the emulator itself.
@@ -331,6 +335,89 @@ std::string QuickItemLabel(QuickItem item) {
     }
 }
 
+bool HasShaderCategory() {
+    return static_cast<bool>(s_shader_cb.parameters);
+}
+
+// The Shaders category sits after the settings.json ones.
+int CategoryCount() {
+    return static_cast<int>(TicoConfig::GetCategories().size()) + (HasShaderCategory() ? 1 : 0);
+}
+
+bool ShaderCategoryActive() {
+    return HasShaderCategory() &&
+           s_category_selected == static_cast<int>(TicoConfig::GetCategories().size());
+}
+
+std::string CategoryLabel(int index) {
+    const auto& categories = TicoConfig::GetCategories();
+    if (index >= 0 && index < static_cast<int>(categories.size())) {
+        const auto& category = categories[static_cast<std::size_t>(index)];
+        return TrLabel(category.label_key, category.fallback);
+    }
+    return TrOr("emulator_shaders", "Shaders");
+}
+
+std::string FormatParameter(float value) {
+    char text[32];
+    std::snprintf(text, sizeof(text), "%.3f", value);
+    std::string out = text;
+    while (out.size() > 1 && out.back() == '0') {
+        out.pop_back();
+    }
+    if (out.back() == '.') {
+        out.pop_back();
+    }
+    return out == "-0" ? "0" : out;
+}
+
+// The Shaders category: the preset, its parameters, and a reset row.
+std::vector<MenuRow> BuildShaderRows() {
+    std::vector<MenuRow> rows;
+    MenuRow preset{TrOr("emulator_shader", "Shader")};
+    preset.value = s_shader_cb.preset_label ? s_shader_cb.preset_label() : std::string();
+    if (preset.value.empty()) {
+        preset.value = TrOr("emulator_none", "None");
+    }
+    rows.push_back(preset);
+    const std::vector<ShaderParameter> parameters =
+        s_shader_cb.parameters ? s_shader_cb.parameters() : std::vector<ShaderParameter>{};
+    for (const ShaderParameter& parameter : parameters) {
+        MenuRow row{parameter.label.empty() ? parameter.id : parameter.label};
+        row.value = FormatParameter(parameter.value);
+        rows.push_back(row);
+    }
+    if (!parameters.empty()) {
+        rows.push_back({TrOr("emulator_reset_parameters", "Reset Parameters")});
+    }
+    return rows;
+}
+
+// Moves the parameter on `row` (1-based after the preset row) by one step.
+void StepShaderParameter(int row, int direction) {
+    if (!s_shader_cb.parameters || !s_shader_cb.set_parameter || row < 1) {
+        return;
+    }
+    const std::vector<ShaderParameter> parameters = s_shader_cb.parameters();
+    if (row > static_cast<int>(parameters.size())) {
+        return;
+    }
+    const ShaderParameter& p = parameters[static_cast<std::size_t>(row - 1)];
+    const float step = p.step > 0.0f ? p.step : 0.01f;
+    // Snap to the step grid so repeated presses don't accumulate float error.
+    float value = p.minimum + std::round((p.value + direction * step - p.minimum) / step) * step;
+    value = std::clamp(value, p.minimum, p.maximum);
+    s_shader_cb.set_parameter(p.id, value);
+}
+
+void OpenShaderBrowser(const std::string& dir) {
+    s_browse_dir = dir;
+    s_browse_entries =
+        s_shader_cb.browse ? s_shader_cb.browse(dir) : std::vector<ShaderBrowseEntry>{};
+    s_menu = MenuScreen::ShaderBrowser;
+    s_selected = 0;
+}
+
 const TicoConfig::OptionCategory& CurrentCategory() {
     const auto& categories = TicoConfig::GetCategories();
     const std::size_t index =
@@ -341,8 +428,11 @@ const TicoConfig::OptionCategory& CurrentCategory() {
 // The current category's options the menu lists right now; an option can
 // depend on another's value (FSR sharpness only shows with the FSR filter).
 std::vector<const TicoConfig::OptionDef*> VisibleOptions() {
-    const TicoConfig::OptionCategory& category = CurrentCategory();
     std::vector<const TicoConfig::OptionDef*> options;
+    if (ShaderCategoryActive()) {
+        return options;
+    }
+    const TicoConfig::OptionCategory& category = CurrentCategory();
     for (std::size_t i = 0; i < category.option_count; ++i) {
         if (TicoConfig::IsOptionShown(category.options[i])) {
             options.push_back(&category.options[i]);
@@ -405,6 +495,9 @@ void ReloadHudPositions() {
 
 // The focused category's options, as the settings panel lists them.
 std::vector<MenuRow> BuildOptionRows() {
+    if (ShaderCategoryActive()) {
+        return BuildShaderRows();
+    }
     std::vector<MenuRow> rows;
     for (const TicoConfig::OptionDef* shown : VisibleOptions()) {
         const TicoConfig::OptionDef& option = *shown;
@@ -486,8 +579,18 @@ std::vector<MenuRow> BuildRows() {
         }
         break;
     case MenuScreen::SettingsCategories:
-        for (const auto& category : TicoConfig::GetCategories()) {
-            rows.push_back({TrLabel(category.label_key, category.fallback)});
+        for (int i = 0; i < CategoryCount(); ++i) {
+            rows.push_back({CategoryLabel(i)});
+        }
+        break;
+    case MenuScreen::ShaderBrowser:
+        for (const ShaderBrowseEntry& entry : s_browse_entries) {
+            rows.push_back({entry.label});
+        }
+        if (rows.empty()) {
+            MenuRow row{TrOr("emulator_no_shaders", "No shaders found")};
+            row.dimmed = true;
+            rows.push_back(row);
         }
         break;
     case MenuScreen::SettingsOptions:
@@ -514,6 +617,9 @@ std::string BuildTitle() {
         break;
     case MenuScreen::Cheats:
         title = TrOr("emulator_cheats", "Cheats");
+        break;
+    case MenuScreen::ShaderBrowser:
+        title = TrOr("emulator_shader", "Shader");
         break;
     case MenuScreen::SettingsCategories:
     case MenuScreen::SettingsOptions:
@@ -710,7 +816,7 @@ void DrawScrollbar(ImDrawList* dl, float x, float top, float height, int first_v
 // Draws the current screen's rows. Lists longer than kMaxVisibleRows scroll to
 // keep the selection in view; rows with a value get change arrows when selected.
 void RenderMenu(ImDrawList* dl, ImVec2 display_size, float ease, const std::vector<MenuRow>& rows) {
-    const bool wide = s_menu == MenuScreen::Cheats;
+    const bool wide = s_menu == MenuScreen::Cheats || s_menu == MenuScreen::ShaderBrowser;
     const float scale = ImGui::GetIO().FontGlobalScale;
     const float menu_width = kMenuWidth * (wide ? 1.5f : 1.0f) * scale;
     const float item_height = (wide ? 58.0f : 64.0f) * scale;
@@ -781,8 +887,7 @@ void RenderSettings(ImDrawList* dl, ImVec2 display_size, float ease) {
                       corner_radius, ImDrawFlags_RoundCornersLeft);
 
     // sidebar
-    const auto& categories = TicoConfig::GetCategories();
-    const int category_count = static_cast<int>(categories.size());
+    const int category_count = CategoryCount();
     const int sidebar_visible = std::min(
         category_count, std::max(1, static_cast<int>((panel_size.y - (2.0f * pad)) / row_height)));
     const int first_category = FirstVisibleRow(s_category_selected, category_count, sidebar_visible);
@@ -803,8 +908,7 @@ void RenderSettings(ImDrawList* dl, ImVec2 display_size, float ease) {
         } else if (active) {
             DrawSelection(dl, item_min, item_max, row_radius, ease);
         }
-        const auto& category = categories[static_cast<std::size_t>(i)];
-        MenuRow row{TrLabel(category.label_key, category.fallback)};
+        MenuRow row{CategoryLabel(i)};
         DrawRowContent(dl, row, item_min, item_max, active, ease, label_size);
     }
     DrawScrollbar(dl, sidebar_right - (6.0f * scale), panel_min.y + corner_radius,
@@ -814,7 +918,7 @@ void RenderSettings(ImDrawList* dl, ImVec2 display_size, float ease) {
     // options pane: the category name over its options
     const float pane_left = sidebar_right + pad;
     const float pane_right = panel_max.x - pad;
-    const std::string heading = TrLabel(CurrentCategory().label_key, CurrentCategory().fallback);
+    const std::string heading = CategoryLabel(s_category_selected);
     const float heading_size = ImGui::GetFontSize() * 0.95f;
     const float heading_height = 56.0f * scale;
     const ImVec2 heading_text_size =
@@ -886,6 +990,8 @@ void RenderHelpersBar(ImDrawList* dl, ImVec2 display_size, float ease) {
         accept = TrOr("emulator_toggle", "Toggle");
     else if (s_menu == MenuScreen::SettingsOptions)
         accept = TrOr("emulator_change", "Change");
+    else if (s_menu == MenuScreen::ShaderBrowser)
+        accept = TrOr("emulator_select", "Select");
 
     const std::array<Helper, 2> helpers = {{
         {"B", back},
@@ -1301,7 +1407,41 @@ Action AcceptSelection(const std::vector<MenuRow>& rows) {
         s_category_selected = s_selected;
         OpenScreen(MenuScreen::SettingsOptions);
         return Action::None;
+    case MenuScreen::ShaderBrowser: {
+        if (s_browse_entries.empty()) {
+            return Action::None;
+        }
+        const ShaderBrowseEntry entry = s_browse_entries[static_cast<std::size_t>(s_selected)];
+        if (entry.is_dir) {
+            const std::string from = s_browse_dir;
+            OpenShaderBrowser(entry.path);
+            // going up lands on the folder we came from
+            for (std::size_t i = 0; i < s_browse_entries.size(); ++i) {
+                if (s_browse_entries[i].path == from) {
+                    s_selected = static_cast<int>(i);
+                }
+            }
+            return Action::None;
+        }
+        if (s_shader_cb.select) {
+            s_shader_cb.select(entry.path);
+        }
+        s_menu = MenuScreen::SettingsOptions;
+        s_selected = 0;
+        return Action::None;
+    }
     case MenuScreen::SettingsOptions: {
+        if (ShaderCategoryActive()) {
+            const int parameter_count = static_cast<int>(rows.size()) - 2;
+            if (s_selected == 0) {
+                OpenShaderBrowser(s_shader_cb.browse_start ? s_shader_cb.browse_start()
+                                                           : std::string());
+            } else if (parameter_count > 0 && s_selected == static_cast<int>(rows.size()) - 1 &&
+                       s_shader_cb.reset_parameters) {
+                s_shader_cb.reset_parameters();
+            }
+            return Action::None;
+        }
         const TicoConfig::OptionDef* selected = SelectedOption();
         if (!selected) {
             return Action::None;
@@ -1328,6 +1468,10 @@ Action CancelScreen() {
     case MenuScreen::SettingsOptions:
         s_menu = MenuScreen::SettingsCategories;
         s_selected = s_category_selected;
+        break;
+    case MenuScreen::ShaderBrowser:
+        s_menu = MenuScreen::SettingsOptions;
+        s_selected = 0;
         break;
     default:
         s_menu = MenuScreen::QuickMenu;
@@ -1391,6 +1535,11 @@ void RefreshCheatList() {
 void SetRewindCallback(RewindListFn callback) {
     s_rewind_list_cb = std::move(callback);
     s_rewind_points.clear();
+}
+
+void SetShaderCallbacks(ShaderCallbacks callbacks) {
+    s_shader_cb = std::move(callbacks);
+    s_browse_entries.clear();
 }
 
 void SetDiscCallback(DiscListFn callback) {
@@ -1498,6 +1647,10 @@ Action Render(int display_w, int display_h) {
 
     const TicoConfig::OptionDef* stepped =
         s_menu == MenuScreen::SettingsOptions && (nav.left || nav.right) ? SelectedOption() : nullptr;
+    if (s_menu == MenuScreen::SettingsOptions && ShaderCategoryActive() && (nav.left || nav.right)) {
+        StepShaderParameter(s_selected, nav.right ? 1 : -1);
+        rows = BuildRows();
+    }
     if (stepped) {
         const TicoConfig::OptionDef& option = *stepped;
         if (option.type != TicoConfig::OptionType::Text) {

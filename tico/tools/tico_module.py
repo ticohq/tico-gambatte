@@ -87,7 +87,8 @@ DEPENDS_ON = {
 POSITIONS = [("hidden", "Hidden"), ("top_left", "Top left"), ("top_right", "Top right"),
              ("bottom_left", "Bottom left"), ("bottom_right", "Bottom right")]
 
-# The overlay's own options: how the game is scaled and filtered, and the HUD.
+# The overlay's own options: how the game is scaled, and the HUD. Shaders are
+# picked in game (Settings > Shaders): tico cannot see the presets on the SD card.
 OVERLAY_TAB = ("settings_gambatte_tab_display", [
     ("settings_gambatte_section_screen", [
         {"key": "display_mode", "label": "settings_gambatte_display_mode", "type": "enum",
@@ -96,10 +97,6 @@ OVERLAY_TAB = ("settings_gambatte_tab_display", [
          "default": "Auto", "choices": [("Stretch", "Stretch"), ("4:3", "4:3"), ("16:9", "16:9"),
                                          ("Original", "Original"), ("1x", "1x"), ("2x", "2x"),
                                          ("Auto", "Auto")]},
-        {"key": "shader_type", "label": "settings_gambatte_shader", "type": "enum",
-         "default": "None", "choices": [("None", "None"), ("LCD", "LCD"), ("xBRZ", "xBRZ"),
-                                         ("Eagle", "Eagle"), ("Dot", "Dot Matrix"),
-                                         ("LcdGridV2", "LCD Grid")]},
     ]),
     ("settings_gambatte_section_hud", [
         {"key": "fps_counter_position", "label": "settings_gambatte_fps_counter", "type": "enum",
@@ -123,8 +120,6 @@ LABELS = {
                                        "显示模式"),
     "settings_gambatte_display_size": ("Size", "Größe", "Tamaño", "Taille", "サイズ", "Tamanho",
                                        "Размер", "尺寸"),
-    "settings_gambatte_shader": ("Shader", "Shader", "Shader", "Shader", "シェーダー", "Shader", "Шейдер",
-                                 "着色器"),
     "settings_gambatte_fps_counter": ("FPS counter", "FPS-Zähler", "Contador de FPS", "Compteur de FPS",
                                       "FPSカウンター", "Contador de FPS", "Счётчик FPS",
                                       "帧率计数器"),
@@ -143,11 +138,6 @@ CHOICES = {
     "Stretch": ("Strecken", "Estirar", "Étirer", "引き伸ばし", "Esticar", "Растянуть", "拉伸"),
     "Original": ("Original", "Original", "Original", "オリジナル", "Original", "Оригинал", "原始"),
     "Auto": ("Auto", "Auto", "Auto", "自動", "Auto", "Авто", "自动"),
-    "None": ("Keiner", "Ninguno", "Aucun", "なし", "Nenhum", "Нет", "无"),
-    "Dot Matrix": ("Punktmatrix", "Matriz de puntos", "Matrice de points", "ドットマトリクス",
-                   "Matriz de pontos", "Точечная матрица", "点阵"),
-    "LCD Grid": ("LCD-Raster", "Rejilla LCD", "Grille LCD", "LCDグリッド", "Grade LCD",
-                 "Сетка LCD", "LCD 网格"),
     "Hidden": ("Ausgeblendet", "Oculto", "Masqué", "非表示", "Oculto", "Скрыто", "隐藏"),
     "Top left": ("Oben links", "Arriba a la izquierda", "En haut à gauche", "左上",
                  "Superior esquerdo", "Сверху слева", "左上"),
