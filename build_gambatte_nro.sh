@@ -120,9 +120,12 @@ TICO_SOURCES=(
     "$TICO_DIR/TicoMain.cpp"
     "$TICO_DIR/TicoCore.cpp"
     "$TICO_DIR/TicoShaders.cpp"
-    "$TICO_DIR/TicoOverlay.cpp"
-    "$TICO_DIR/TicoTranslationManager.cpp"
     "$TICO_DIR/TicoStubs.cpp"
+    "$TICO_DIR/overlay/imgui_overlay.cpp"
+    "$TICO_DIR/overlay/overlay_ui.cpp"
+    "$TICO_DIR/overlay/ra_alerts.cpp"
+    "$TICO_DIR/overlay/tico_config.cpp"
+    "$TICO_DIR/overlay/translation_manager.cpp"
 )
 
 # glad.c (OpenGL loader)
@@ -216,7 +219,12 @@ LINK_LIBS="-L$PORTLIBS/lib -L$LIBNX/lib"
 LINK_LIBS="$LINK_LIBS -lSDL2_mixer -lmpg123 -lmodplug -lopusfile -lopus -lvorbisidec -logg -lSDL2"
 
 if [ "$USE_CUSTOM_MESA" -eq 0 ]; then
-    LINK_LIBS="$LINK_LIBS -lEGL -lglapi -ldrm_nouveau"
+    if [ -f "$PORTLIBS/lib/libdrm_nouveau.a" ]; then
+        LINK_LIBS="$LINK_LIBS -lEGL -lglapi -ldrm_nouveau"
+    else
+        # Horizon-native Mesa (the switch-dev image): no libdrm_nouveau, see egl.pc
+        LINK_LIBS="$LINK_LIBS -lEGL -lglapi -lexpat"
+    fi
 fi
 
 LINK_LIBS="$LINK_LIBS -lcurl -lmbedtls -lmbedx509 -lmbedcrypto -lz -lzstd"
@@ -257,6 +265,9 @@ mkdir -p "$ROMFS_DIR"
 [ -d "$TICO_DIR/fonts" ] && cp -r "$TICO_DIR/fonts" "$ROMFS_DIR/"
 [ -d "$TICO_DIR/lang" ] && cp -r "$TICO_DIR/lang" "$ROMFS_DIR/"
 [ -d "$TICO_DIR/assets" ] && cp -r "$TICO_DIR/assets" "$ROMFS_DIR/"
+# the overlay builds its settings menu from the module's own definition
+mkdir -p "$ROMFS_DIR/module"
+cp "$TICO_DIR/module/settings.json" "$ROMFS_DIR/module/"
 
 ELF2NRO_ARGS=(--nacp="$NACP_FILE")
 
@@ -267,12 +278,45 @@ fi
 
 $ELF2NRO "$ELF_OUTPUT" "$NRO_OUTPUT" "${ELF2NRO_ARGS[@]}"
 
-if [ -f "$NRO_OUTPUT" ]; then
-    echo "======================================"
-    echo "Build successful!"
-    echo "Output: $NRO_OUTPUT"
-    echo "======================================"
-else
+if [ ! -f "$NRO_OUTPUT" ]; then
     echo "Error: tico-gambatte.nro not found"
     exit 1
 fi
+
+#---------------------------------------------------------------------------------
+# Module bundle
+#
+# A module is a directory, not a bare NRO: tico discovers it by reading
+# module.json, and everything the module owns -- its settings definition, the
+# strings that label it, gamelists and console artwork -- travels with it.
+#
+# The NRO sits beside module.json, so an installed bundle is self-contained and
+# extracts straight into sdmc:/tico/modules/<id>/.
+#---------------------------------------------------------------------------------
+MODULE_SRC="$TICO_DIR/module"
+MODULE_ID=$(sed -n 's/.*"id"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$MODULE_SRC/module.json" | head -1)
+MODULE_OUT="$BUILD_DIR/module/$MODULE_ID"
+
+rm -rf "$BUILD_DIR/module"
+mkdir -p "$MODULE_OUT"
+cp -r "$MODULE_SRC/." "$MODULE_OUT/"
+cp "$NRO_OUTPUT" "$MODULE_OUT/"
+# tico merges these into its own strings to label the settings screen
+cp -R "$TICO_DIR/lang" "$MODULE_OUT/"
+
+# Tico prefers .json.gz when resolving a gamelist.
+if [ -d "$MODULE_OUT/gamelists" ]; then
+    gzip -f -9 "$MODULE_OUT"/gamelists/*.json 2>/dev/null || true
+fi
+
+BUNDLE="$BUILD_DIR/tico-$MODULE_ID-module.zip"
+rm -f "$BUNDLE"
+( cd "$BUILD_DIR/module" && zip -qr "$BUNDLE" "$MODULE_ID" )
+
+echo "======================================"
+echo "Build successful!"
+echo "  NRO:    $NRO_OUTPUT"
+echo "  Module: $BUNDLE"
+echo "          extracts to sdmc:/tico/modules/$MODULE_ID/"
+echo "======================================"
+find "$MODULE_OUT" -type f | sed "s|$BUILD_DIR/module/|    |"

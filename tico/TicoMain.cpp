@@ -3,12 +3,16 @@
 /// Sets up SDL/EGL/ImGui and runs the main loop
 
 #include "TicoCore.h"
-#include "TicoOverlay.h"
 #include "TicoConfig.h"
 #include "TicoAudio.h"
-#include "TicoTranslationManager.h"
+#include "overlay/imgui_overlay.h"
+#include "overlay/overlay_ui.h"
+#include "overlay/tico_config.h"
+#include "overlay/translation_manager.h"
 
 #include <SDL.h>
+#include <algorithm>
+#include <cmath>
 #include <memory>
 #include <cstdio>
 #include <cstdlib>
@@ -51,11 +55,27 @@ static EGLDisplay g_eglDisplay = EGL_NO_DISPLAY;
 static EGLContext g_eglContext = EGL_NO_CONTEXT;
 static EGLSurface g_eglSurface = EGL_NO_SURFACE;
 
+namespace OverlayUI = SwitchFrontend::OverlayUI;
+namespace ImGuiOverlay = SwitchFrontend::ImGuiOverlay;
+namespace OverlayConfig = SwitchFrontend::TicoConfig;
+
 static std::unique_ptr<TicoCore> g_core;
-static std::unique_ptr<TicoOverlay> g_overlay;
+
+// Quick menu
+static bool g_menuOpen = false;
+static bool g_overlayReady = false;
+static bool g_toggleHeld = false;
+static uint32_t g_navHeldPrev = 0;
+static int g_navRepeatFrames = 0;
+static constexpr int kNavInitialDelayFrames = 14;
+static constexpr int kNavRepeatFrames = 6;
+
+// HUD frame counter
+static int g_hudFrames = 0;
+static float g_hudSeconds = 0.0f;
+static float g_hudFps = 0.0f;
 
 static bool g_running = true;
-static bool g_exitToSystem = false;
 static TicoAudio g_audio;
 static SDL_AudioDeviceID g_audioDevice = 0;
 static SDL_GameController *g_controllers[4] = {nullptr, nullptr, nullptr, nullptr};
@@ -618,6 +638,283 @@ void ProcessEvents()
     }
 }
 
+//==============================================================================
+// Quick menu
+//==============================================================================
+
+static void ChainloadTico()
+{
+#ifdef __SWITCH__
+    const char *primaryNro = "sdmc:/switch/tico.nro";
+    const char *fallbackNro = "sdmc:/switch/tico/tico.nro";
+    const char *targetNro = nullptr;
+
+    struct stat buffer;
+    if (stat(primaryNro, &buffer) == 0)
+        targetNro = primaryNro;
+    else if (stat(fallbackNro, &buffer) == 0)
+        targetNro = fallbackNro;
+
+    if (targetNro != nullptr)
+    {
+        // Build args as space-separated string (per libnx envSetNextLoad docs)
+        char args[512];
+        snprintf(args, sizeof(args), "%s --resume", targetNro);
+        envSetNextLoad(targetNro, args);
+        LOG_INFO("HOME", "Chainloading back to %s with args: %s", targetNro, args);
+    }
+    else
+    {
+        LOG_WARN("HOME", "Chainload target not found! Exiting normally.");
+    }
+    remove("imgui.ini");
+#endif
+}
+
+static std::string StatePath(int slot)
+{
+    std::string romName = g_core ? g_core->GetGamePath() : std::string();
+    size_t lastSlash = romName.find_last_of("/\\");
+    if (lastSlash != std::string::npos)
+        romName = romName.substr(lastSlash + 1);
+    size_t lastDot = romName.find_last_of('.');
+    if (lastDot != std::string::npos)
+        romName = romName.substr(0, lastDot);
+    const std::string dir = TicoConfig::StatesPath();
+    TicoConfig::MakeDirs(dir);
+    return dir + romName + ".state" + std::to_string(slot);
+}
+
+static ShaderType ShaderFromSettings()
+{
+    const std::string shader = OverlayConfig::GetConfigValue("shader_type", "None");
+    if (shader == "LCD") return ShaderType::LCD;
+    if (shader == "xBRZ") return ShaderType::xBRZ;
+    if (shader == "Eagle") return ShaderType::Eagle;
+    if (shader == "Dot") return ShaderType::Dot;
+    if (shader == "LcdGridV2") return ShaderType::LcdGridV2;
+    return ShaderType::None;
+}
+
+// settings.json is the one settings definition: every core option it lists
+// reaches the core, with its default when the config file does not set it.
+static void ApplySettingsToCore()
+{
+    if (!g_core)
+        return;
+    OverlayConfig::ApplyToCore([](const std::string &key, const std::string &value) {
+        g_core->SetOption(key, value);
+    });
+    g_core->SetShader(ShaderFromSettings());
+}
+
+static std::string TrFormat(const char *key, int value)
+{
+    const std::string format = SwitchFrontend::OverlayTranslation::tr(key);
+    char text[256];
+    snprintf(text, sizeof(text), format.c_str(), value);
+    return text;
+}
+
+static void OpenMenu()
+{
+    if (!g_overlayReady || g_menuOpen)
+        return;
+    g_menuOpen = true;
+    g_navHeldPrev = 0;
+    g_navRepeatFrames = 0;
+    ImGuiOverlay::SetVisible(true);
+}
+
+static void CloseMenu()
+{
+    if (!g_menuOpen)
+        return;
+    g_menuOpen = false;
+    ImGuiOverlay::SetVisible(false);
+    if (g_core)
+        g_core->ClearInputs();
+}
+
+// D-pad + left stick, edge plus hold-repeat; Switch A accepts, B goes back.
+static void FeedMenu(SDL_GameController *pad)
+{
+    enum : uint32_t { Up = 1, Down = 2, Left = 4, Right = 8 };
+    const Sint16 axisX = SDL_GameControllerGetAxis(pad, SDL_CONTROLLER_AXIS_LEFTX);
+    const Sint16 axisY = SDL_GameControllerGetAxis(pad, SDL_CONTROLLER_AXIS_LEFTY);
+    uint32_t held = 0;
+    if (SDL_GameControllerGetButton(pad, SDL_CONTROLLER_BUTTON_DPAD_UP) || axisY < -16000) held |= Up;
+    if (SDL_GameControllerGetButton(pad, SDL_CONTROLLER_BUTTON_DPAD_DOWN) || axisY > 16000) held |= Down;
+    if (SDL_GameControllerGetButton(pad, SDL_CONTROLLER_BUTTON_DPAD_LEFT) || axisX < -16000) held |= Left;
+    if (SDL_GameControllerGetButton(pad, SDL_CONTROLLER_BUTTON_DPAD_RIGHT) || axisX > 16000) held |= Right;
+
+    uint32_t fire = held & ~g_navHeldPrev; // new presses fire instantly
+    if (held != 0 && held == g_navHeldPrev)
+    {
+        if (--g_navRepeatFrames <= 0)
+        {
+            fire |= held;
+            g_navRepeatFrames = kNavRepeatFrames;
+        }
+    }
+    else if (fire != 0)
+    {
+        g_navRepeatFrames = kNavInitialDelayFrames;
+    }
+    g_navHeldPrev = held;
+
+    // SDL names buttons by position: B is the Switch A (east), A the Switch B.
+    static bool acceptHeld = false;
+    static bool cancelHeld = false;
+    const bool accept = SDL_GameControllerGetButton(pad, SDL_CONTROLLER_BUTTON_B);
+    const bool cancel = SDL_GameControllerGetButton(pad, SDL_CONTROLLER_BUTTON_A);
+    ImGuiOverlay::FeedNav({
+        .up = (fire & Up) != 0,
+        .down = (fire & Down) != 0,
+        .left = (fire & Left) != 0,
+        .right = (fire & Right) != 0,
+        .accept = accept && !acceptHeld,
+        .cancel = cancel && !cancelHeld,
+    });
+    acceptHeld = accept;
+    cancelHeld = cancel;
+}
+
+// Carries out what the menu chose on the last drawn frame.
+static void RunMenuAction()
+{
+    using OverlayUI::Action;
+    const Action action = ImGuiOverlay::ConsumeAction();
+    if (OverlayUI::ConsumeSettingsChanged())
+        ApplySettingsToCore();
+
+    switch (action)
+    {
+    case Action::None:
+        return;
+    case Action::Resume:
+        CloseMenu();
+        return;
+    case Action::Exit:
+        LOG_INFO("HOME", "Exit requested");
+        CloseMenu();
+        ChainloadTico();
+        g_running = false;
+        return;
+    case Action::Reset:
+        if (g_core)
+            g_core->Reset();
+        CloseMenu();
+        return;
+    default:
+        break;
+    }
+
+    if (OverlayUI::IsSaveStateAction(action) && g_core)
+    {
+        const int slot = OverlayUI::GetStateSlotForAction(action);
+        g_core->SaveState(StatePath(slot - 1));
+        OverlayUI::ShowToast(TrFormat("emulator_state_saved", slot));
+        CloseMenu();
+    }
+    else if (OverlayUI::IsLoadStateAction(action) && g_core)
+    {
+        const int slot = OverlayUI::GetStateSlotForAction(action);
+        g_core->LoadState(StatePath(slot - 1));
+        OverlayUI::ShowToast(TrFormat("emulator_state_loaded", slot));
+        CloseMenu();
+    }
+}
+
+static void UpdateHud(float deltaTime)
+{
+    g_hudFrames++;
+    g_hudSeconds += deltaTime;
+    if (g_hudSeconds >= 0.5f)
+    {
+        g_hudFps = static_cast<float>(g_hudFrames) / g_hudSeconds;
+        g_hudFrames = 0;
+        g_hudSeconds = 0.0f;
+    }
+    OverlayUI::HudStats stats;
+    stats.fps = g_hudFps;
+    stats.fast_forward = g_audio.IsFastForwarding();
+    if (g_core)
+    {
+        stats.rendered_width = g_core->GetFrameWidth();
+        stats.rendered_height = g_core->GetFrameHeight();
+    }
+    OverlayUI::SetHudStats(stats);
+}
+
+// The game image, placed by the Display tab: Integer scales the frame by 1x,
+// 2x or the largest that fits ("Auto"); Display fits an aspect ratio (4:3,
+// 16:9, the core's own "Original") or stretches.
+static void DrawGame(ImDrawList *dl, ImVec2 displaySize)
+{
+    if (!g_core)
+        return;
+    const unsigned int texture = g_core->GetFrameTextureID();
+    if (texture == 0)
+        return;
+    const int width = g_core->GetFrameWidth();
+    const int height = g_core->GetFrameHeight();
+    const int fboWidth = g_core->GetFBOWidth();
+    const int fboHeight = g_core->GetFBOHeight();
+    const float aspectRatio = g_core->GetAspectRatio();
+    const std::string mode = OverlayConfig::GetConfigValue("display_mode", "Integer");
+    const std::string size = OverlayConfig::GetConfigValue("display_size", "Auto");
+
+    const float baseW = width > 0 ? static_cast<float>(width) : 160.0f;
+    const float baseH = height > 0 ? static_cast<float>(height) : 144.0f;
+    float dstWidth = displaySize.x;
+    float dstHeight = displaySize.y;
+    if (mode == "Integer")
+    {
+        int scale;
+        if (size == "1x")
+            scale = 1;
+        else if (size == "2x")
+            scale = 2;
+        else
+            scale = std::max(1, std::min(static_cast<int>(displaySize.x / baseW),
+                                         static_cast<int>(displaySize.y / baseH)));
+        dstWidth = std::min(displaySize.x, baseW * scale);
+        dstHeight = std::min(displaySize.y, baseH * scale);
+    }
+    else if (size != "Stretch")
+    {
+        float ar = aspectRatio > 0.0f ? aspectRatio : baseW / baseH;
+        if (size == "4:3")
+            ar = 4.0f / 3.0f;
+        else if (size == "16:9")
+            ar = 16.0f / 9.0f;
+        if (ar > displaySize.x / displaySize.y)
+        {
+            dstWidth = displaySize.x;
+            dstHeight = displaySize.x / ar;
+        }
+        else
+        {
+            dstHeight = displaySize.y;
+            dstWidth = displaySize.y * ar;
+        }
+    }
+    dstWidth = std::floor(dstWidth);
+    dstHeight = std::floor(dstHeight);
+    const float offsetX = std::floor((displaySize.x - dstWidth) / 2.0f);
+    const float offsetY = std::floor((displaySize.y - dstHeight) / 2.0f);
+
+    dl->AddRectFilled(ImVec2(0, 0), displaySize, IM_COL32(0, 0, 0, 255));
+    const float uMax = (fboWidth > 0 && width > 0) ? (float)width / fboWidth : 1.0f;
+    const float vMax = (fboHeight > 0 && height > 0) ? (float)height / fboHeight : 1.0f;
+    const float halfU = (fboWidth > 0) ? 0.5f / fboWidth : 0.0f;
+    const float halfV = (fboHeight > 0) ? 0.5f / fboHeight : 0.0f;
+    dl->AddImage((ImTextureID)(intptr_t)texture, ImVec2(offsetX, offsetY),
+                 ImVec2(offsetX + dstWidth, offsetY + dstHeight), ImVec2(halfU, halfV),
+                 ImVec2(uMax - halfU, vMax - halfV));
+}
+
 void HandleInput()
 {
     SDL_GameController *controllers[4] = {nullptr, nullptr, nullptr, nullptr};
@@ -634,63 +931,36 @@ void HandleInput()
             controllers[numControllers++] = g_controllers[i];
     }
 
-    if (g_overlay && numControllers > 0 && g_overlay->HandleInput(controllers[0]))
+    RunMenuAction();
+    if (!g_running)
+        return;
+
+    SDL_GameController *pad = numControllers > 0 ? controllers[0] : nullptr;
+    if (pad && g_overlayReady)
     {
-        if (g_overlay->ShouldExitToSystem())
+        // Guide, or Plus+Minus, opens the menu and closes it again.
+        const bool start = SDL_GameControllerGetButton(pad, SDL_CONTROLLER_BUTTON_START);
+        const bool select = SDL_GameControllerGetButton(pad, SDL_CONTROLLER_BUTTON_BACK);
+        const bool guide = SDL_GameControllerGetButton(pad, SDL_CONTROLLER_BUTTON_GUIDE);
+        const bool toggle = guide || (start && select);
+        if (toggle && !g_toggleHeld)
         {
-            LOG_INFO("HOME", "ExitToSystem: terminating process");
-            remove("imgui.ini");
-            g_exitToSystem = true;
-            g_running = false;
-        }
-        if (g_overlay->ShouldExit())
-        {
-            LOG_INFO("HOME", "ShouldExit detected! g_running will be false.");
-#ifdef __SWITCH__
-            const char *primaryNro = "sdmc:/switch/tico.nro";
-            const char *fallbackNro = "sdmc:/switch/tico/tico.nro";
-            const char *targetNro = nullptr;
-
-            // Check if primaryNro exists, else check fallbackNro
-            struct stat buffer;
-            if (stat(primaryNro, &buffer) == 0)
-            {
-                targetNro = primaryNro;
-            }
-            else if (stat(fallbackNro, &buffer) == 0)
-            {
-                targetNro = fallbackNro;
-            }
-
-            if (targetNro != nullptr)
-            {
-                // Build args as space-separated string (per libnx envSetNextLoad docs)
-                // Format: "nro_path --resume"
-                char args[512];
-                snprintf(args, sizeof(args), "%s --resume", targetNro);
-
-                envSetNextLoad(targetNro, args);
-                LOG_INFO("HOME", "Chainloading back to %s with args: %s", targetNro, args);
-            }
+            if (g_menuOpen)
+                CloseMenu();
             else
-            {
-                LOG_WARN("HOME", "Chainload target not found! Exiting normally.");
-            }
-
-            // Clean up imgui.ini to avoid clutter/persistence issues
-            remove("imgui.ini");
-            LOG_INFO("HOME", "Deleted imgui.ini");
-#endif
-            g_running = false;
+                OpenMenu();
         }
-        if (g_overlay->ShouldReset())
+        g_toggleHeld = toggle;
+        if (toggle && g_core)
         {
-            g_overlay->ClearReset();
-            if (g_core)
-            {
-                g_core->Reset();
-            }
+            g_core->ClearInputs();
+            return;
         }
+    }
+    if (g_menuOpen)
+    {
+        if (pad)
+            FeedMenu(pad);
         return;
     }
 
@@ -801,48 +1071,21 @@ void Render()
     GetDisplayResolution(w, h);
     ImVec2 displaySize((float)w, (float)h);
 
-    if (g_core)
+    if (g_core && !g_menuOpen)
     {
-        bool overlayVisible = g_overlay && g_overlay->IsVisible();
-
-        if (!overlayVisible)
-        {
-            if (frameCount <= 3)
-            {
-                LOG_DEBUG("RENDER", "Frame %d: Calling RunFrame", frameCount);
-            }
-            g_core->RunFrame();
-            if (frameCount <= 3)
-            {
-                LOG_DEBUG("RENDER", "Frame %d: RunFrame returned", frameCount);
-            }
-        }
+        if (frameCount <= 3)
+            LOG_DEBUG("RENDER", "Frame %d: Calling RunFrame", frameCount);
+        g_core->RunFrame();
     }
 
     glViewport(0, 0, w, h);
     glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
     glClear(GL_COLOR_BUFFER_BIT);
 
-    if (g_overlay)
-    {
-        unsigned int tex = g_core ? g_core->GetFrameTextureID() : 0;
-        float ar = g_core ? g_core->GetAspectRatio() : 4.0f / 3.0f;
-        int fw = g_core ? g_core->GetFrameWidth() : 640;
-        int fh = g_core ? g_core->GetFrameHeight() : 480;
-        int fboW = g_core ? g_core->GetFBOWidth() : 0;
-        int fboH = g_core ? g_core->GetFBOHeight() : 0;
+    DrawGame(ImGui::GetBackgroundDrawList(), displaySize);
+    UpdateHud(ImGui::GetIO().DeltaTime);
+    ImGuiOverlay::Draw(g_core.get(), displaySize.x, displaySize.y, ImGui::GetIO().DeltaTime);
 
-        g_overlay->Render(displaySize, tex, ar, fw, fh, fboW, fboH);
-
-        // Sync shader selection from overlay to core
-        if (g_core && g_overlay)
-        {
-            ShaderType desired = static_cast<ShaderType>(g_overlay->GetShaderSelection());
-            if (desired != g_core->GetShader())
-                g_core->SetShader(desired);
-        }
-    }
-    
     if (g_core && g_core->GetOSDFrames() > 0)
     {
         ImDrawList *fg = ImGui::GetForegroundDrawList();
@@ -924,8 +1167,6 @@ int main(int argc, char *argv[])
 
     LOG_INFO("HOME", "gambatte starting (slug: %s)...", TicoConfig::CURRENT_SLUG.c_str());
 
-    TicoTranslationManager::Instance().Init();
-
     LOG_INFO("HOME", "Calling InitWindow...");
     if (!InitWindow())
     {
@@ -961,12 +1202,38 @@ int main(int argc, char *argv[])
     g_lastOperationMode = 255;
 #endif
 
+    // Parse arguments: argv[1] = console slug, argv[2] = ROM path, argv[3] = title
+    std::string slug = "gbc";
+    std::string romPath = TicoConfig::TEST_ROM;
+    std::string titleArg;
+
+    if (argc >= 3) {
+        slug = argv[1];
+        romPath = argv[2];
+        if (argc >= 4 && argv[3])
+            titleArg = argv[3];
+    } else if (argc == 2) {
+        // Fallback: single arg is ROM path
+        romPath = argv[1];
+    }
+
+    // The console picks the save and state folders, so it is set before the
+    // core, which reads them when it is created.
+    TicoConfig::SetSlug(slug);
+    LOG_INFO("HOME", "Console slug: %s", slug.c_str());
+    LOG_INFO("HOME", "ROM path: %s", romPath.c_str());
+    LOG_INFO("HOME", "Configured paths for slug '%s': saves=%s states=%s system=%s",
+             slug.c_str(), TicoConfig::SavesPath().c_str(), TicoConfig::StatesPath().c_str(),
+             TicoConfig::SystemPath().c_str());
+    TicoConfig::MakeDirs(TicoConfig::SavesPath());
+    TicoConfig::MakeDirs(TicoConfig::StatesPath());
+    TicoConfig::MakeDirs(TicoConfig::SystemPath());
+
     LOG_INFO("HOME", "Creating core...");
     g_core = std::make_unique<TicoCore>();
-
-    LOG_INFO("HOME", "Creating overlay...");
-    g_overlay = std::make_unique<TicoOverlay>();
-    g_overlay->SetCore(g_core.get());
+    g_core->EnsureConfigLoaded();
+    OverlayConfig::ReloadConfig();
+    ApplySettingsToCore();
 
     g_core->SetAudioCallbacks(AudioSampleCallback, AudioSampleBatchCallback, AudioFlushCallback);
 
@@ -975,46 +1242,24 @@ int main(int argc, char *argv[])
         LOG_WARN("HOME", "TicoAudio init failed");
     }
 
-    LOG_INFO("HOME", "Core and overlay created");
-
-    // Parse arguments: argv[1] = console slug, argv[2] = ROM path
-    std::string slug = "gbc";
-    std::string romPath = TicoConfig::TEST_ROM;
-
-    if (argc >= 3) {
-        slug = argv[1];
-        romPath = argv[2];
-    } else if (argc == 2) {
-        // Fallback: single arg is ROM path
-        romPath = argv[1];
-    }
-
-    // Configure paths based on slug
-    TicoConfig::SetSlug(slug);
-    LOG_INFO("HOME", "Console slug: %s", slug.c_str());
-    LOG_INFO("HOME", "ROM path: %s", romPath.c_str());
-    LOG_INFO("HOME", "Configured paths for slug '%s': saves=%s states=%s",
-             slug.c_str(), TicoConfig::SAVES_PATH.c_str(), TicoConfig::STATES_PATH.c_str());
-
-    // Ensure directories exist
-#ifdef __SWITCH__
-    {
+    g_overlayReady = ImGuiOverlay::Init();
+    OverlayUI::SetSlotOccupiedCallback([](int slot) {
         struct stat st;
-        if (stat(TicoConfig::SAVES_PATH.c_str(), &st) == -1) mkdir(TicoConfig::SAVES_PATH.c_str(), 0777);
-        if (stat(TicoConfig::STATES_PATH.c_str(), &st) == -1) mkdir(TicoConfig::STATES_PATH.c_str(), 0777);
-        if (stat(TicoConfig::SYSTEM_PATH.c_str(), &st) == -1) mkdir(TicoConfig::SYSTEM_PATH.c_str(), 0777);
-    }
-#endif
+        return slot >= 1 && stat(StatePath(slot - 1).c_str(), &st) == 0;
+    });
+    OverlayUI::ReloadSettings();
+    LOG_INFO("HOME", "Core and overlay created");
 
     {
         size_t lastSlash = romPath.find_last_of("/\\");
         std::string filename = (lastSlash != std::string::npos) ? romPath.substr(lastSlash + 1) : romPath;
 
-        std::string cleanTitle = TicoUtils::GetCleanTitle(filename);
+        // Prefer the launcher-supplied title; fall back to the rom filename.
+        std::string cleanTitle = titleArg.empty() ? TicoUtils::GetCleanTitle(filename) : titleArg;
         if (cleanTitle.empty())
             cleanTitle = filename;
 
-        g_overlay->SetGameTitle(cleanTitle);
+        OverlayUI::SetGameTitle(cleanTitle);
     }
 
     LOG_INFO("HOME", "Loading ROM: %s", romPath.c_str());
@@ -1027,9 +1272,8 @@ int main(int argc, char *argv[])
         g_audio.SetCoreSampleRate(g_core->GetSampleRate());
         LOG_INFO("AUDIO", "Configured audio pipeline for %.0f Hz core output", g_core->GetSampleRate());
         g_core->InitShaderPipeline();
+        g_core->SetShader(ShaderFromSettings());
     }
-
-    Uint32 lastTime = SDL_GetTicks();
 
     // Frame pacing is handled entirely by vsync (eglSwapBuffers with
     // eglSwapInterval=1). Audio is non-blocking, so the swap is the only governor.
@@ -1059,21 +1303,14 @@ int main(int argc, char *argv[])
             lastFastForward = fastForward;
         }
 
-        float deltaTime = (SDL_GetTicks() - lastTime) / 1000.0f;
-        lastTime = SDL_GetTicks();
-
-        if (g_overlay)
-        {
-            g_overlay->Update(deltaTime);
-        }
-
         ProcessEvents();
         HandleInput();
         Render();
     }
 
     LOG_INFO("HOME", "Starting cleanup...");
-    g_overlay.reset();
+    OverlayUI::SetSlotOccupiedCallback(nullptr);
+    ImGuiOverlay::Shutdown();
     g_core.reset();
 
 
@@ -1095,17 +1332,5 @@ int main(int argc, char *argv[])
     LOG_INFO("HOME", "Clean exit");
     Logger::Instance().CloseLogFile();
 
-    // For exit-to-system: exit(0) triggers libnx's __libnx_exit() which calls
-    // __appExit() (tears down fsdev, fs, time, hid, applet, sm) and then
-    // __nx_exit(0, envGetExitFuncPtr()).
-    // Normally, Homebrew apps return to their loader (Sphaira/hbmenu) rather than exiting to OS.
-    // By setting __nx_applet_exit_mode = 1, we bypass the loader and tell Switch OS to terminate the applet.
-#ifdef __SWITCH__
-    if (g_exitToSystem)
-    {
-        LOG_INFO("HOME", "g_exitToSystem is true, forcing applet termination via __nx_applet_exit_mode");
-        __nx_applet_exit_mode = 1;
-    }
-#endif
     exit(0);
 }

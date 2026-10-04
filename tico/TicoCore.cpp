@@ -64,8 +64,8 @@ void TicoCore::LoadSaveData()
     if (lastDot != std::string::npos)
         filename = filename.substr(0, lastDot);
 
-    std::string savePathSav = std::string(TicoConfig::SAVES_PATH) + filename + ".sav";
-    std::string savePathSrm = std::string(TicoConfig::SAVES_PATH) + filename + ".srm";
+    std::string savePathSav = TicoConfig::SavesPath() + filename + ".sav";
+    std::string savePathSrm = TicoConfig::SavesPath() + filename + ".srm";
 
     std::ifstream fileSav(savePathSav, std::ios::binary);
     if (fileSav)
@@ -102,10 +102,9 @@ void TicoCore::SaveSaveData()
         filename = filename.substr(0, lastDot);
 
     struct stat st = {0};
-    if (stat(TicoConfig::SAVES_PATH.c_str(), &st) == -1)
-        mkdir(TicoConfig::SAVES_PATH.c_str(), 0777);
+    TicoConfig::MakeDirs(TicoConfig::SavesPath());
 
-    std::string savePath = std::string(TicoConfig::SAVES_PATH) + filename + ".sav";
+    std::string savePath = TicoConfig::SavesPath() + filename + ".sav";
 
     std::ofstream file(savePath, std::ios::binary);
     if (file)
@@ -408,6 +407,48 @@ static void RC_CCONV RAServerCall(const rc_api_request_t* request, rc_client_ser
 }
 
 //==============================================================================
+// Content paths
+//==============================================================================
+
+namespace {
+std::string ContentRoot(const char *key, const char *defaultRoot)
+{
+    static nlohmann::json config = [] {
+#ifdef __SWITCH__
+        std::ifstream f("sdmc:/tico/config/cores/gambatte.jsonc");
+#else
+        std::ifstream f("tico/config/cores/gambatte.jsonc");
+#endif
+        nlohmann::json j = f.good() ? nlohmann::json::parse(f, nullptr, false, true)
+                                    : nlohmann::json::object();
+        return j.is_object() ? j : nlohmann::json::object();
+    }();
+
+    std::string root = defaultRoot;
+    auto it = config.find(key);
+    if (it != config.end() && it->is_string() && !it->get<std::string>().empty())
+        root = it->get<std::string>();
+    if (root.back() != '/')
+        root += '/';
+    return root;
+}
+} // namespace
+
+namespace TicoConfig {
+std::string SystemPath() { return ContentRoot("tico_system_path", "sdmc:/tico/system/") + "gambatte/"; }
+std::string SavesPath() { return ContentRoot("tico_saves_path", "sdmc:/tico/saves/") + CURRENT_SLUG + "/"; }
+std::string StatesPath() { return ContentRoot("tico_states_path", "sdmc:/tico/states/") + CURRENT_SLUG + "/"; }
+
+void MakeDirs(const std::string &path)
+{
+    // A custom root may not exist yet, so create every missing level.
+    for (size_t at = path.find('/', path.find(":/") != std::string::npos ? path.find(":/") + 2 : 1);
+         at != std::string::npos; at = path.find('/', at + 1))
+        mkdir(path.substr(0, at).c_str(), 0777);
+}
+} // namespace TicoConfig
+
+//==============================================================================
 // Construction
 //==============================================================================
 
@@ -416,8 +457,10 @@ TicoCore::TicoCore()
     memset(m_inputState, 0, sizeof(m_inputState));
     memset(m_analogState, 0, sizeof(m_analogState));
 
-    m_systemDir = TicoConfig::SYSTEM_PATH;
-    m_saveDir = TicoConfig::SAVES_PATH;
+    m_systemDir = TicoConfig::SystemPath();
+    m_saveDir = TicoConfig::SavesPath();
+    TicoConfig::MakeDirs(m_systemDir);
+    TicoConfig::MakeDirs(m_saveDir);
 }
 
 TicoCore::~TicoCore()
@@ -1648,6 +1691,15 @@ int16_t TicoCore::HandleInputState(unsigned port, unsigned device,
 //==============================================================================
 // Configuration
 //==============================================================================
+
+void TicoCore::SetOption(const std::string &key, const std::string &value)
+{
+    std::string &stored = m_configOptions[key];
+    if (stored == value)
+        return;
+    stored = value;
+    m_variablesUpdated = true;
+}
 
 void TicoCore::LoadConfig()
 {
