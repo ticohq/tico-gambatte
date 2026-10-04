@@ -956,48 +956,99 @@ static void DrawGame(VkCommandBuffer cmd, ImDrawList *dl, ImVec2 displaySize)
         dl->AddImage(tex, ImVec2(rect.x, rect.y), ImVec2(rect.x + rect.z, rect.y + rect.w));
 }
 
-// Whether the fast-forward hotkey is down, and the core button it stands in
-// for (kept from the game while it is the hotkey), or -1.
-static bool FastForwardHotkeyDown(SDL_GameController *pad, int &retroId)
+// Switch buttons by their Nintendo names, as the Controls tab spells them.
+enum class SwitchButton
 {
-    const std::string hotkey = OverlayConfig::GetConfigValue("fast_forward_hotkey", "ZR");
-    retroId = -1;
-    if (hotkey == "ZR")
-    {
-        retroId = RETRO_DEVICE_ID_JOYPAD_R2;
-        return SDL_GameControllerGetAxis(pad, SDL_CONTROLLER_AXIS_TRIGGERRIGHT) > 16000;
-    }
-    if (hotkey == "ZL")
-    {
-        retroId = RETRO_DEVICE_ID_JOYPAD_L2;
-        return SDL_GameControllerGetAxis(pad, SDL_CONTROLLER_AXIS_TRIGGERLEFT) > 16000;
-    }
-    if (hotkey == "R")
-    {
-        retroId = RETRO_DEVICE_ID_JOYPAD_R;
-        return SDL_GameControllerGetButton(pad, SDL_CONTROLLER_BUTTON_RIGHTSHOULDER);
-    }
-    if (hotkey == "L")
-    {
-        retroId = RETRO_DEVICE_ID_JOYPAD_L;
-        return SDL_GameControllerGetButton(pad, SDL_CONTROLLER_BUTTON_LEFTSHOULDER);
-    }
-    if (hotkey == "StickR")
-    {
-        retroId = RETRO_DEVICE_ID_JOYPAD_R3;
-        return SDL_GameControllerGetButton(pad, SDL_CONTROLLER_BUTTON_RIGHTSTICK);
-    }
-    if (hotkey == "StickL")
-    {
-        retroId = RETRO_DEVICE_ID_JOYPAD_L3;
-        return SDL_GameControllerGetButton(pad, SDL_CONTROLLER_BUTTON_LEFTSTICK);
-    }
-    return false;
+    A, B, X, Y, L, R, ZL, ZR, Plus, Minus, StickL, StickR, Up, Down, Left, Right, Count
+};
+
+static constexpr uint32_t SwitchBit(SwitchButton button)
+{
+    return 1u << static_cast<unsigned>(button);
 }
 
-static void UpdateFastForward(SDL_GameController *pad, int &maskedRetroId)
+static uint32_t SwitchBitFor(const std::string &name)
 {
-    const bool down = pad && FastForwardHotkeyDown(pad, maskedRetroId);
+    static const std::pair<const char *, SwitchButton> kNames[] = {
+        {"A", SwitchButton::A}, {"B", SwitchButton::B}, {"X", SwitchButton::X},
+        {"Y", SwitchButton::Y}, {"L", SwitchButton::L}, {"R", SwitchButton::R},
+        {"ZL", SwitchButton::ZL}, {"ZR", SwitchButton::ZR}, {"Plus", SwitchButton::Plus},
+        {"Minus", SwitchButton::Minus}, {"StickL", SwitchButton::StickL},
+        {"StickR", SwitchButton::StickR}, {"Up", SwitchButton::Up},
+        {"Down", SwitchButton::Down}, {"Left", SwitchButton::Left},
+        {"Right", SwitchButton::Right},
+    };
+    for (const auto &entry : kNames)
+        if (name == entry.first)
+            return SwitchBit(entry.second);
+    return 0; // "None"
+}
+
+// SDL names buttons by position (Xbox layout): its B is the Switch A, its A
+// the Switch B, its Y the Switch X and its X the Switch Y.
+static uint32_t SwitchButtonsHeld(SDL_GameController *pad)
+{
+    struct SdlButton
+    {
+        SDL_GameControllerButton sdl;
+        SwitchButton button;
+    };
+    static const SdlButton kButtons[] = {
+        {SDL_CONTROLLER_BUTTON_B, SwitchButton::A},
+        {SDL_CONTROLLER_BUTTON_A, SwitchButton::B},
+        {SDL_CONTROLLER_BUTTON_Y, SwitchButton::X},
+        {SDL_CONTROLLER_BUTTON_X, SwitchButton::Y},
+        {SDL_CONTROLLER_BUTTON_LEFTSHOULDER, SwitchButton::L},
+        {SDL_CONTROLLER_BUTTON_RIGHTSHOULDER, SwitchButton::R},
+        {SDL_CONTROLLER_BUTTON_START, SwitchButton::Plus},
+        {SDL_CONTROLLER_BUTTON_BACK, SwitchButton::Minus},
+        {SDL_CONTROLLER_BUTTON_LEFTSTICK, SwitchButton::StickL},
+        {SDL_CONTROLLER_BUTTON_RIGHTSTICK, SwitchButton::StickR},
+        {SDL_CONTROLLER_BUTTON_DPAD_UP, SwitchButton::Up},
+        {SDL_CONTROLLER_BUTTON_DPAD_DOWN, SwitchButton::Down},
+        {SDL_CONTROLLER_BUTTON_DPAD_LEFT, SwitchButton::Left},
+        {SDL_CONTROLLER_BUTTON_DPAD_RIGHT, SwitchButton::Right},
+    };
+    uint32_t held = 0;
+    for (const SdlButton &button : kButtons)
+        if (SDL_GameControllerGetButton(pad, button.sdl))
+            held |= SwitchBit(button.button);
+    if (SDL_GameControllerGetAxis(pad, SDL_CONTROLLER_AXIS_TRIGGERLEFT) > 16000)
+        held |= SwitchBit(SwitchButton::ZL);
+    if (SDL_GameControllerGetAxis(pad, SDL_CONTROLLER_AXIS_TRIGGERRIGHT) > 16000)
+        held |= SwitchBit(SwitchButton::ZR);
+    return held;
+}
+
+// Game Boy buttons, and the core's turbo and palette buttons, with the
+// Switch button each sits on by default.
+struct ButtonMapping
+{
+    const char *key;
+    const char *fallback;
+    unsigned retroId;
+};
+static const ButtonMapping kButtonMappings[] = {
+    {"map_a", "A", RETRO_DEVICE_ID_JOYPAD_A},
+    {"map_b", "B", RETRO_DEVICE_ID_JOYPAD_B},
+    {"map_start", "Plus", RETRO_DEVICE_ID_JOYPAD_START},
+    {"map_select", "Minus", RETRO_DEVICE_ID_JOYPAD_SELECT},
+    {"map_up", "Up", RETRO_DEVICE_ID_JOYPAD_UP},
+    {"map_down", "Down", RETRO_DEVICE_ID_JOYPAD_DOWN},
+    {"map_left", "Left", RETRO_DEVICE_ID_JOYPAD_LEFT},
+    {"map_right", "Right", RETRO_DEVICE_ID_JOYPAD_RIGHT},
+    {"map_turbo_a", "X", RETRO_DEVICE_ID_JOYPAD_X},
+    {"map_turbo_b", "Y", RETRO_DEVICE_ID_JOYPAD_Y},
+    {"map_palette_prev", "L", RETRO_DEVICE_ID_JOYPAD_L},
+    {"map_palette_next", "R", RETRO_DEVICE_ID_JOYPAD_R},
+};
+
+// Updates fast forward from player 1's hotkey and returns the hotkey's
+// Switch button (0 when there is none), which then stays out of the game.
+static uint32_t UpdateFastForward(SDL_GameController *pad)
+{
+    const uint32_t button = SwitchBitFor(OverlayConfig::GetConfigValue("fast_forward_hotkey", "ZR"));
+    const bool down = pad && button && (SwitchButtonsHeld(pad) & button);
     bool active;
     if (OverlayConfig::GetConfigValue("fast_forward_mode", "hold") == "toggle")
     {
@@ -1013,6 +1064,7 @@ static void UpdateFastForward(SDL_GameController *pad, int &maskedRetroId)
     if (!active)
         g_ffFrameBudget = 0.0f;
     g_audio.SetFastForward(active);
+    return button;
 }
 
 static void StopFastForward()
@@ -1096,78 +1148,36 @@ void HandleInput()
     {
         g_core->ClearInputs();
 
+        // Player 1's fast-forward hotkey: its Switch button is not mapped.
+        const uint32_t ffButton = UpdateFastForward(numControllers > 0 ? controllers[0] : nullptr);
+        const bool analogDpad = OverlayConfig::GetConfigValue("analog_dpad", "enabled") != "disabled";
+
         for (int p = 0; p < numControllers; p++)
         {
             SDL_GameController *controller = controllers[p];
             if (!controller) continue;
 
-            // Standard RetroPad mapping for Switch (SDL assumes Xbox layout)
-            // Switch A (Right, SDL B) -> RetroPad A (Right)
-            g_core->SetInputState(p, RETRO_DEVICE_ID_JOYPAD_A,
-                                  SDL_GameControllerGetButton(controller, SDL_CONTROLLER_BUTTON_B));
-            // Switch B (Bottom, SDL A) -> RetroPad B (Bottom)
-            g_core->SetInputState(p, RETRO_DEVICE_ID_JOYPAD_B,
-                                  SDL_GameControllerGetButton(controller, SDL_CONTROLLER_BUTTON_A));
-            // Switch X (Top, SDL Y) -> RetroPad X (Top)
-            g_core->SetInputState(p, RETRO_DEVICE_ID_JOYPAD_X,
-                                  SDL_GameControllerGetButton(controller, SDL_CONTROLLER_BUTTON_Y));
-            // Switch Y (Left, SDL X) -> RetroPad Y (Left)
-            g_core->SetInputState(p, RETRO_DEVICE_ID_JOYPAD_Y,
-                                  SDL_GameControllerGetButton(controller, SDL_CONTROLLER_BUTTON_X));
+            uint32_t held = SwitchButtonsHeld(controller);
+            if (p == 0)
+                held &= ~ffButton;
+            if (analogDpad)
+            {
+                const int16_t leftX = SDL_GameControllerGetAxis(controller, SDL_CONTROLLER_AXIS_LEFTX);
+                const int16_t leftY = SDL_GameControllerGetAxis(controller, SDL_CONTROLLER_AXIS_LEFTY);
+                if (leftY < -16000) held |= SwitchBit(SwitchButton::Up);
+                if (leftY > 16000) held |= SwitchBit(SwitchButton::Down);
+                if (leftX < -16000) held |= SwitchBit(SwitchButton::Left);
+                if (leftX > 16000) held |= SwitchBit(SwitchButton::Right);
+            }
 
-            // Switch + -> RetroPad Start
-            g_core->SetInputState(p, RETRO_DEVICE_ID_JOYPAD_START,
-                                  SDL_GameControllerGetButton(controller, SDL_CONTROLLER_BUTTON_START));
-            // Switch - -> RetroPad Select
-            g_core->SetInputState(p, RETRO_DEVICE_ID_JOYPAD_SELECT,
-                                  SDL_GameControllerGetButton(controller, SDL_CONTROLLER_BUTTON_BACK));
-
-            // Switch DPad + Left Stick -> RetroPad DPad
-            int16_t leftX = SDL_GameControllerGetAxis(controller, SDL_CONTROLLER_AXIS_LEFTX);
-            int16_t leftY = SDL_GameControllerGetAxis(controller, SDL_CONTROLLER_AXIS_LEFTY);
-
-            bool dpadUp = SDL_GameControllerGetButton(controller, SDL_CONTROLLER_BUTTON_DPAD_UP) || (leftY < -16000);
-            bool dpadDown = SDL_GameControllerGetButton(controller, SDL_CONTROLLER_BUTTON_DPAD_DOWN) || (leftY > 16000);
-            bool dpadLeft = SDL_GameControllerGetButton(controller, SDL_CONTROLLER_BUTTON_DPAD_LEFT) || (leftX < -16000);
-            bool dpadRight = SDL_GameControllerGetButton(controller, SDL_CONTROLLER_BUTTON_DPAD_RIGHT) || (leftX > 16000);
-
-            g_core->SetInputState(p, RETRO_DEVICE_ID_JOYPAD_UP, dpadUp);
-            g_core->SetInputState(p, RETRO_DEVICE_ID_JOYPAD_DOWN, dpadDown);
-            g_core->SetInputState(p, RETRO_DEVICE_ID_JOYPAD_LEFT, dpadLeft);
-            g_core->SetInputState(p, RETRO_DEVICE_ID_JOYPAD_RIGHT, dpadRight);
-
-            // Switch L -> RetroPad L
-            g_core->SetInputState(p, RETRO_DEVICE_ID_JOYPAD_L,
-                                  SDL_GameControllerGetButton(controller, SDL_CONTROLLER_BUTTON_LEFTSHOULDER));
-            // Switch R -> RetroPad R
-            g_core->SetInputState(p, RETRO_DEVICE_ID_JOYPAD_R,
-                                  SDL_GameControllerGetButton(controller, SDL_CONTROLLER_BUTTON_RIGHTSHOULDER));
-            
-            bool zl = SDL_GameControllerGetAxis(controller, SDL_CONTROLLER_AXIS_TRIGGERLEFT) > 16000;
-            bool zr = SDL_GameControllerGetAxis(controller, SDL_CONTROLLER_AXIS_TRIGGERRIGHT) > 16000;
-
-            // Switch ZL -> RetroPad L2
-            g_core->SetInputState(p, RETRO_DEVICE_ID_JOYPAD_L2, zl);
-            // Switch ZR -> RetroPad R2
-            g_core->SetInputState(p, RETRO_DEVICE_ID_JOYPAD_R2, zr);
-
-            // Left stick -> RetroPad Analog Left
-            g_core->SetAnalogState(p, RETRO_DEVICE_INDEX_ANALOG_LEFT, RETRO_DEVICE_ID_ANALOG_X,
-                                   SDL_GameControllerGetAxis(controller, SDL_CONTROLLER_AXIS_LEFTX));
-            g_core->SetAnalogState(p, RETRO_DEVICE_INDEX_ANALOG_LEFT, RETRO_DEVICE_ID_ANALOG_Y,
-                                   SDL_GameControllerGetAxis(controller, SDL_CONTROLLER_AXIS_LEFTY));
-            // Right stick -> RetroPad Analog Right
-            g_core->SetAnalogState(p, RETRO_DEVICE_INDEX_ANALOG_RIGHT, RETRO_DEVICE_ID_ANALOG_X,
-                                   SDL_GameControllerGetAxis(controller, SDL_CONTROLLER_AXIS_RIGHTX));
-            g_core->SetAnalogState(p, RETRO_DEVICE_INDEX_ANALOG_RIGHT, RETRO_DEVICE_ID_ANALOG_Y,
-                                   SDL_GameControllerGetAxis(controller, SDL_CONTROLLER_AXIS_RIGHTY));
+            // Controls > Button mapping: each Game Boy button on its Switch button.
+            for (const ButtonMapping &mapping : kButtonMappings)
+            {
+                const uint32_t bit =
+                    SwitchBitFor(OverlayConfig::GetConfigValue(mapping.key, mapping.fallback));
+                g_core->SetInputState(p, mapping.retroId, (held & bit) != 0);
+            }
         }
-
-        // Player 1's fast-forward hotkey; its button stays out of the game.
-        int maskedRetroId = -1;
-        UpdateFastForward(numControllers > 0 ? controllers[0] : nullptr, maskedRetroId);
-        if (maskedRetroId >= 0)
-            g_core->SetInputState(0, (unsigned)maskedRetroId, false);
     }
 }
 

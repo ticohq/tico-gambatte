@@ -84,6 +84,12 @@ DEPENDS_ON = {
     "gambatte_gb_palette_pixelshift_1": ("gambatte_gb_internal_palette", "PixelShift - Pack 1"),
 }
 
+# Switch buttons a Game Boy button (or the fast-forward hotkey) can sit on.
+SWITCH_BUTTONS = [("A", "A"), ("B", "B"), ("X", "X"), ("Y", "Y"), ("L", "L"), ("R", "R"),
+                  ("ZL", "ZL"), ("ZR", "ZR"), ("Plus", "Plus"), ("Minus", "Minus"),
+                  ("StickL", "Left stick"), ("StickR", "Right stick"), ("Up", "Up"),
+                  ("Down", "Down"), ("Left", "Left"), ("Right", "Right"), ("None", "Disabled")]
+
 POSITIONS = [("hidden", "Hidden"), ("top_left", "Top left"), ("top_right", "Top right"),
              ("bottom_left", "Bottom left"), ("bottom_right", "Bottom right")]
 
@@ -105,15 +111,31 @@ OVERLAY_TAB = ("settings_gambatte_tab_display", [
         {"key": "fast_forward_mode", "label": "settings_gambatte_fast_forward_mode", "type": "enum",
          "default": "hold", "choices": [("hold", "Hold"), ("toggle", "Toggle")]},
         {"key": "fast_forward_hotkey", "label": "settings_gambatte_fast_forward_hotkey", "type": "enum",
-         "default": "ZR", "choices": [("ZR", "ZR"), ("ZL", "ZL"), ("R", "R"), ("L", "L"),
-                                       ("StickR", "Right stick"), ("StickL", "Left stick"),
-                                       ("None", "Disabled")]},
+         "default": "ZR", "choices": SWITCH_BUTTONS},
     ]),
     ("settings_gambatte_section_hud", [
         {"key": "fps_counter_position", "label": "settings_gambatte_fps_counter", "type": "enum",
          "default": "hidden", "choices": POSITIONS},
         {"key": "rendered_ir_position", "label": "settings_gambatte_rendered_resolution",
          "type": "enum", "default": "hidden", "choices": POSITIONS},
+    ]),
+])
+
+# The overlay's button mapping: Game Boy button -> Switch button, defaults as
+# tico has always mapped them.
+CONTROLS_TAB = ("settings_gambatte_tab_controls", [
+    ("settings_gambatte_section_button_mapping", [
+        {"key": key, "label": "settings_gambatte_" + key, "type": "enum", "default": default,
+         "choices": SWITCH_BUTTONS}
+        for key, default in [
+            ("map_a", "A"), ("map_b", "B"), ("map_start", "Plus"), ("map_select", "Minus"),
+            ("map_up", "Up"), ("map_down", "Down"), ("map_left", "Left"), ("map_right", "Right"),
+            ("map_turbo_a", "X"), ("map_turbo_b", "Y"),
+            ("map_palette_prev", "L"), ("map_palette_next", "R"),
+        ]
+    ] + [
+        {"key": "analog_dpad", "label": "settings_gambatte_analog_dpad", "type": "bool",
+         "default": "enabled"},
     ]),
 ])
 
@@ -149,6 +171,47 @@ LABELS = {
                                               "Botón de avance rápido", "Bouton d'avance rapide",
                                               "早送りボタン", "Botão do avanço rápido",
                                               "Кнопка перемотки", "快进按键"),
+    "settings_gambatte_tab_controls": ("Controls", "Steuerung", "Controles", "Commandes", "操作",
+                                       "Controles", "Управление", "控制"),
+    "settings_gambatte_section_button_mapping": ("Button mapping", "Tastenbelegung",
+                                                 "Asignación de botones", "Attribution des boutons",
+                                                 "ボタン割り当て", "Mapeamento de botões",
+                                                 "Назначение кнопок", "按键映射"),
+    "settings_gambatte_map_a": ("A", "A", "A", "A", "A", "A", "A", "A"),
+    "settings_gambatte_map_b": ("B", "B", "B", "B", "B", "B", "B", "B"),
+    "settings_gambatte_map_start": ("Start", "Start", "Start", "Start", "スタート", "Start",
+                                    "Start", "开始"),
+    "settings_gambatte_map_select": ("Select", "Select", "Select", "Select", "セレクト", "Select",
+                                     "Select", "选择"),
+    "settings_gambatte_map_up": ("D-Pad Up", "Steuerkreuz oben", "Cruceta arriba",
+                                 "Croix haut", "十字キー上", "Direcional para cima",
+                                 "Крестовина вверх", "方向键上"),
+    "settings_gambatte_map_down": ("D-Pad Down", "Steuerkreuz unten", "Cruceta abajo",
+                                   "Croix bas", "十字キー下", "Direcional para baixo",
+                                   "Крестовина вниз", "方向键下"),
+    "settings_gambatte_map_left": ("D-Pad Left", "Steuerkreuz links", "Cruceta izquierda",
+                                   "Croix gauche", "十字キー左", "Direcional para a esquerda",
+                                   "Крестовина влево", "方向键左"),
+    "settings_gambatte_map_right": ("D-Pad Right", "Steuerkreuz rechts", "Cruceta derecha",
+                                    "Croix droite", "十字キー右", "Direcional para a direita",
+                                    "Крестовина вправо", "方向键右"),
+    "settings_gambatte_map_turbo_a": ("Turbo A", "Turbo A", "Turbo A", "Turbo A", "連射 A",
+                                      "Turbo A", "Турбо A", "连发 A"),
+    "settings_gambatte_map_turbo_b": ("Turbo B", "Turbo B", "Turbo B", "Turbo B", "連射 B",
+                                      "Turbo B", "Турбо B", "连发 B"),
+    "settings_gambatte_map_palette_prev": ("Previous palette", "Vorherige Palette",
+                                           "Paleta anterior", "Palette précédente",
+                                           "前のパレット", "Paleta anterior",
+                                           "Предыдущая палитра", "上一个调色板"),
+    "settings_gambatte_map_palette_next": ("Next palette", "Nächste Palette", "Paleta siguiente",
+                                           "Palette suivante", "次のパレット", "Próxima paleta",
+                                           "Следующая палитра", "下一个调色板"),
+    "settings_gambatte_analog_dpad": ("Left stick as D-Pad", "Linker Stick als Steuerkreuz",
+                                      "Stick izquierdo como cruceta",
+                                      "Stick gauche comme croix directionnelle",
+                                      "左スティックを十字キーとして使う",
+                                      "Analógico esquerdo como direcional",
+                                      "Левый стик как крестовина", "左摇杆作为方向键"),
     "settings_gambatte_rendered_resolution": ("Rendered resolution", "Gerenderte Auflösung", "Resolución renderizada",
                                               "Résolution de rendu", "描画解像度",
                                               "Resolução renderizada", "Разрешение рендеринга",
@@ -172,6 +235,12 @@ CHOICES = {
                     "Правый стик", "右摇杆"),
     "Left stick": ("Linker Stick", "Stick izquierdo", "Stick gauche", "左スティック", "Analógico esquerdo",
                    "Левый стик", "左摇杆"),
+    "Plus": ("Plus", "Más", "Plus", "プラス", "Mais", "Плюс", "加号"),
+    "Minus": ("Minus", "Menos", "Moins", "マイナス", "Menos", "Минус", "减号"),
+    "Up": ("Oben", "Arriba", "Haut", "上", "Cima", "Вверх", "上"),
+    "Down": ("Unten", "Abajo", "Bas", "下", "Baixo", "Вниз", "下"),
+    "Left": ("Links", "Izquierda", "Gauche", "左", "Esquerda", "Влево", "左"),
+    "Right": ("Rechts", "Derecha", "Droite", "右", "Direita", "Вправо", "右"),
     "Hidden": ("Ausgeblendet", "Oculto", "Masqué", "非表示", "Oculto", "Скрыто", "隐藏"),
     "Top left": ("Oben links", "Arriba a la izquierda", "En haut à gauche", "左上",
                  "Superior esquerdo", "Сверху слева", "左上"),
@@ -248,12 +317,17 @@ def build_settings(dump: dict) -> dict:
             out_sections.append({"title": title, "options": options})
         tabs.append({"name": tab, "sections": out_sections})
 
-    tab, sections = OVERLAY_TAB
-    tabs.insert(1, {"name": tab, "sections": [
-        {"title": title, "options": [
-            {**o, "choices": [{"label": l, "value": v} for v, l in o["choices"]]}
-            for o in options]}
-        for title, options in sections]})
+    def overlay_tab(definition):
+        tab, sections = definition
+        return {"name": tab, "sections": [
+            {"title": title, "options": [
+                {**o, "choices": [{"label": l, "value": v} for v, l in o["choices"]]}
+                if "choices" in o else dict(o)
+                for o in options]}
+            for title, options in sections]}
+
+    tabs.insert(1, overlay_tab(OVERLAY_TAB))
+    tabs.append(overlay_tab(CONTROLS_TAB))
 
     return {
         "core_id": "gambatte",
