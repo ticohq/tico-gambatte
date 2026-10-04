@@ -112,6 +112,91 @@
           ]
         },
         {
+          "title": "settings_gambatte_section_fast_forward",
+          "options": [
+            {
+              "key": "fast_forward_speed",
+              "label": "settings_gambatte_fast_forward_speed",
+              "type": "enum",
+              "default": "200",
+              "choices": [
+                {
+                  "label": "150%",
+                  "value": "150"
+                },
+                {
+                  "label": "200%",
+                  "value": "200"
+                },
+                {
+                  "label": "300%",
+                  "value": "300"
+                },
+                {
+                  "label": "400%",
+                  "value": "400"
+                },
+                {
+                  "label": "Unlimited",
+                  "value": "unlimited"
+                }
+              ]
+            },
+            {
+              "key": "fast_forward_mode",
+              "label": "settings_gambatte_fast_forward_mode",
+              "type": "enum",
+              "default": "hold",
+              "choices": [
+                {
+                  "label": "Hold",
+                  "value": "hold"
+                },
+                {
+                  "label": "Toggle",
+                  "value": "toggle"
+                }
+              ]
+            },
+            {
+              "key": "fast_forward_hotkey",
+              "label": "settings_gambatte_fast_forward_hotkey",
+              "type": "enum",
+              "default": "ZR",
+              "choices": [
+                {
+                  "label": "ZR",
+                  "value": "ZR"
+                },
+                {
+                  "label": "ZL",
+                  "value": "ZL"
+                },
+                {
+                  "label": "R",
+                  "value": "R"
+                },
+                {
+                  "label": "L",
+                  "value": "L"
+                },
+                {
+                  "label": "Right stick",
+                  "value": "StickR"
+                },
+                {
+                  "label": "Left stick",
+                  "value": "StickL"
+                },
+                {
+                  "label": "Disabled",
+                  "value": "None"
+                }
+              ]
+            }
+          ]
+        },
+        {
           "title": "settings_gambatte_section_hud",
           "options": [
             {
