@@ -6,6 +6,7 @@
   "settings": "config/modules/gambatte/settings.json",
   "config_file": "gambatte.jsonc",
   "is_libretro": true,
+  "achievements": true,
   "system_dir": "gambatte",
   "systems": [
     {
