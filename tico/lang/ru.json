@@ -145,5 +145,6 @@
     "settings_gambatte_value_twb64_pack_2": "TWB64 - Пакет 2",
     "settings_gambatte_value_twb64_pack_3": "TWB64 - Пакет 3",
     "settings_gambatte_value_unlimited": "Без ограничений",
-    "settings_gambatte_value_up": "Вверх"
+    "settings_gambatte_value_up": "Вверх",
+    "emulator_sd_card": "SD-карта"
 }

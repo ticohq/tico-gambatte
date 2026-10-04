@@ -214,6 +214,10 @@ void FeedNav(const OverlayUI::NavInput& nav) {
     s_nav.cancel |= nav.cancel;
 }
 
+void FeedTouch(const OverlayUI::TouchInput& touch) {
+    OverlayUI::FeedTouch(touch);
+}
+
 void Draw(TicoCore* core, float width, float height, float delta_time) {
     if (!s_initialized) {
         return;
