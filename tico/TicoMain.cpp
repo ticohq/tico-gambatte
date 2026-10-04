@@ -17,6 +17,8 @@
 #include <json.hpp>
 #include <strings.h>
 #include <algorithm>
+#include <fstream>
+#include <map>
 #include <cctype>
 #include <cmath>
 #include <memory>
@@ -1146,36 +1148,94 @@ static std::string SlugForRom(const std::string &path)
     return LowerExtension(path) == ".gbc" ? "gbc" : "gb";
 }
 
-// tico's ROM folders for both consoles, following the module's Paths tab.
-static std::vector<std::string> DefaultRomFolders()
+// The consoles the library lists, each with its own folders.
+struct LibraryConsole
 {
-    std::string root = OverlayConfig::GetConfigValue("tico_roms_path", "");
-    if (root.empty())
-        root = "sdmc:/tico/roms/";
-    if (root.back() != '/')
-        root += '/';
-    return {root + "gb/", root + "gbc/"};
+    const char *slug;
+    const char *title;
+};
+static const LibraryConsole kLibraryConsoles[] = {
+    {"gb", "Game Boy"},
+    {"gbc", "Game Boy Color"},
+};
+
+static std::string WithSlash(std::string path)
+{
+    std::replace(path.begin(), path.end(), '\\', '/');
+    if (!path.empty() && path.back() != '/')
+        path += '/';
+    return path;
 }
 
-// Folders the user added in Settings > Library (library_folders in gambatte.jsonc).
-static std::vector<std::string> UserRomFolders()
+// tico's ROM bases (general.jsonc): the ROMs path, then the extra bases. A
+// console's games are in <base>/<slug>/ under each, as tico scans them.
+static std::vector<std::string> TicoRomBases()
+{
+    std::vector<std::string> bases;
+#ifdef __SWITCH__
+    std::ifstream file("sdmc:/tico/config/general.jsonc");
+#else
+    std::ifstream file("tico/config/general.jsonc");
+#endif
+    const nlohmann::json j = file.good() ? nlohmann::json::parse(file, nullptr, false, true)
+                                         : nlohmann::json();
+    std::string roms = j.is_object() ? j.value("roms_path", std::string()) : std::string();
+    bases.push_back(WithSlash(roms.empty() ? "sdmc:/tico/roms/" : roms));
+    if (j.is_object() && j.contains("rom_base_paths") && j["rom_base_paths"].is_array())
+        for (const auto &base : j["rom_base_paths"])
+            if (base.is_string() && !base.get<std::string>().empty())
+                bases.push_back(WithSlash(base.get<std::string>()));
+    return bases;
+}
+
+// The module's own folders per console (tico_rom_folders in gambatte.jsonc),
+// the same list tico's Paths tab edits.
+static nlohmann::json ModuleRomFolders()
+{
+    const std::string text = OverlayConfig::GetConfigJson("tico_rom_folders");
+    nlohmann::json j = text.empty() ? nlohmann::json::object()
+                                    : nlohmann::json::parse(text, nullptr, false);
+    return j.is_object() ? j : nlohmann::json::object();
+}
+
+static std::vector<std::string> ModuleRomFolders(const std::string &slug)
 {
     std::vector<std::string> folders;
-    const std::string text = OverlayConfig::GetConfigJson("library_folders");
-    const nlohmann::json j = text.empty() ? nlohmann::json::array()
-                                          : nlohmann::json::parse(text, nullptr, false);
-    if (j.is_array())
-        for (const auto &entry : j)
+    const nlohmann::json all = ModuleRomFolders();
+    const auto it = all.find(slug);
+    if (it != all.end() && it->is_array())
+        for (const auto &entry : *it)
             if (entry.is_string() && !entry.get<std::string>().empty())
-                folders.push_back(entry.get<std::string>());
+                folders.push_back(WithSlash(entry.get<std::string>()));
     return folders;
 }
 
-static void SaveUserRomFolders(const std::vector<std::string> &folders)
+static void SetModuleRomFolders(const std::string &slug, const std::vector<std::string> &folders)
 {
-    OverlayConfig::SetConfigJson("library_folders", nlohmann::json(folders).dump());
+    nlohmann::json all = ModuleRomFolders();
+    if (folders.empty())
+        all.erase(slug);
+    else
+        all[slug] = folders;
+    OverlayConfig::SetConfigJson("tico_rom_folders", all.dump());
     OverlayConfig::SaveConfig();
 }
+
+// Every folder a console's games are read from: each base's <base>/<slug>/,
+// then the module's own folders.
+static std::vector<std::string> RomFoldersFor(const std::string &slug)
+{
+    std::vector<std::string> folders;
+    for (const std::string &base : TicoRomBases())
+        folders.push_back(base + slug + "/");
+    for (const std::string &folder : ModuleRomFolders(slug))
+        if (std::find(folders.begin(), folders.end(), folder) == folders.end())
+            folders.push_back(folder);
+    return folders;
+}
+
+// The console of each listed game, by path: the folder list it was found in.
+static std::map<std::string, std::string> g_librarySlugs;
 
 static void ScanRomFolder(const std::string &dir, int depth, std::vector<std::string> &out)
 {
@@ -1210,31 +1270,40 @@ static void ScanRomFolder(const std::string &dir, int depth, std::vector<std::st
 
 static std::vector<OverlayUI::LibraryEntry> ListLibrary()
 {
-    std::vector<std::string> folders = DefaultRomFolders();
-    for (const std::string &folder : UserRomFolders())
-        folders.push_back(folder);
-    std::vector<std::string> roms;
-    for (const std::string &folder : folders)
-        ScanRomFolder(folder, 2, roms);
-    std::sort(roms.begin(), roms.end());
-    roms.erase(std::unique(roms.begin(), roms.end()), roms.end());
-
+    g_librarySlugs.clear();
     std::vector<OverlayUI::LibraryEntry> entries;
-    for (const std::string &path : roms)
+    for (const LibraryConsole &console : kLibraryConsoles)
     {
-        const std::string filename = path.substr(path.find_last_of('/') + 1);
-        std::string title = TicoUtils::GetCleanTitle(filename);
-        if (title.empty())
-            title = filename;
-        std::string detail = SlugForRom(path);
+        std::vector<std::string> roms;
+        for (const std::string &folder : RomFoldersFor(console.slug))
+            ScanRomFolder(folder, 2, roms);
+        std::sort(roms.begin(), roms.end());
+        roms.erase(std::unique(roms.begin(), roms.end()), roms.end());
+
+        std::string detail = console.slug;
         std::transform(detail.begin(), detail.end(), detail.begin(),
                        [](unsigned char c) { return (char)std::toupper(c); });
-        entries.push_back({title, detail, path});
+        for (const std::string &path : roms)
+        {
+            if (!g_librarySlugs.emplace(path, console.slug).second)
+                continue; // listed under the first console that has it
+            const std::string filename = path.substr(path.find_last_of('/') + 1);
+            std::string title = TicoUtils::GetCleanTitle(filename);
+            if (title.empty())
+                title = filename;
+            entries.push_back({title, detail, path});
+        }
     }
     std::sort(entries.begin(), entries.end(), [](const auto &a, const auto &b) {
         return strcasecmp(a.title.c_str(), b.title.c_str()) < 0;
     });
     return entries;
+}
+
+static std::string LibrarySlugFor(const std::string &path)
+{
+    const auto it = g_librarySlugs.find(path);
+    return it != g_librarySlugs.end() ? it->second : SlugForRom(path);
 }
 
 static void RegisterLibrary()
@@ -1245,22 +1314,28 @@ static void RegisterLibrary()
     OverlayUI::SetLibraryCallbacks(std::move(library));
 
     OverlayUI::LibraryFolderCallbacks folders;
-    folders.defaults = [] { return DefaultRomFolders(); };
-    folders.folders = [] { return UserRomFolders(); };
-    folders.add = [](const std::string &path) {
-        std::vector<std::string> current = UserRomFolders();
-        const std::vector<std::string> defaults = DefaultRomFolders();
-        if (std::find(current.begin(), current.end(), path) == current.end() &&
-            std::find(defaults.begin(), defaults.end(), path) == defaults.end())
+    folders.groups = [] {
+        std::vector<OverlayUI::LibraryFolderGroup> groups;
+        const std::vector<std::string> bases = TicoRomBases();
+        for (const LibraryConsole &console : kLibraryConsoles)
         {
-            current.push_back(path);
-            SaveUserRomFolders(current);
+            OverlayUI::LibraryFolderGroup group;
+            group.label = console.title;
+            for (const std::string &base : bases)
+                group.bases.push_back(base + console.slug + "/");
+            group.folders = ModuleRomFolders(console.slug);
+            groups.push_back(std::move(group));
         }
+        return groups;
     };
-    folders.remove = [](const std::string &path) {
-        std::vector<std::string> current = UserRomFolders();
-        current.erase(std::remove(current.begin(), current.end(), path), current.end());
-        SaveUserRomFolders(current);
+    folders.set = [](int group, const std::vector<std::string> &paths) {
+        if (group >= 0 && group < (int)(sizeof(kLibraryConsoles) / sizeof(kLibraryConsoles[0])))
+        {
+            std::vector<std::string> normalized;
+            for (const std::string &path : paths)
+                normalized.push_back(WithSlash(path));
+            SetModuleRomFolders(kLibraryConsoles[group].slug, normalized);
+        }
     };
     OverlayUI::SetLibraryFolderCallbacks(std::move(folders));
 }
@@ -1346,7 +1421,7 @@ void HandleInput()
         const std::string path = g_pendingLaunch;
         g_pendingLaunch.clear();
         CloseMenu();
-        StartGame(SlugForRom(path), path, std::string());
+        StartGame(LibrarySlugFor(path), path, std::string());
         return;
     }
 

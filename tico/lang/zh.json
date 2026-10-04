@@ -37,7 +37,6 @@
     "emulator_vertical": "纵向",
     "emulator_horizontal_inverted": "横向反转",
     "emulator_vertical_inverted": "纵向反转",
-    "emulator_default": "默认",
     "emulator_side_by_side": "左右并排",
     "emulator_stacked": "上下排列",
     "emulator_single_screen": "单屏",
@@ -553,5 +552,11 @@
     "emulator_use_folder": "使用此文件夹",
     "emulator_no_games": "未找到游戏。请在设置 > 游戏库中添加文件夹",
     "emulator_exit": "退出",
-    "emulator_load_game_failed": "无法加载游戏"
+    "emulator_load_game_failed": "无法加载游戏",
+    "emulator_change_folder": "更改文件夹",
+    "emulator_move_up": "上移",
+    "emulator_move_down": "下移",
+    "emulator_cancel": "取消",
+    "emulator_remove_folder_confirm": "移除此文件夹？不会删除任何文件。",
+    "emulator_folder_exists": "文件夹已添加"
 }
