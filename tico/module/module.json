@@ -1,0 +1,46 @@
+{
+  "id": "gambatte",
+  "name": "Gambatte",
+  "nro": "tico-gambatte.nro",
+  "launch": "\"{nro}\" \"{slug}\" \"{rom}\" \"{title}\"",
+  "settings": "config/modules/gambatte/settings.json",
+  "config_file": "gambatte.jsonc",
+  "is_libretro": true,
+  "system_dir": "gambatte",
+  "systems": [
+    {
+      "slug": "gb",
+      "title": "Game Boy",
+      "short_title": "GB",
+      "extensions": [
+        ".gb",
+        ".gbc"
+      ],
+      "games_file": "gb.json",
+      "retroachievements_id": 4,
+      "colors": {
+        "start": "7FD98A",
+        "end": "B4E65F",
+        "start_dark": "5AA863",
+        "end_dark": "82A83F"
+      }
+    },
+    {
+      "slug": "gbc",
+      "title": "Game Boy Color",
+      "short_title": "GBC",
+      "extensions": [
+        ".gb",
+        ".gbc"
+      ],
+      "games_file": "gbc.json",
+      "retroachievements_id": 6,
+      "colors": {
+        "start": "E6C85A",
+        "end": "E69F4F",
+        "start_dark": "A8913F",
+        "end_dark": "A87339"
+      }
+    }
+  ]
+}
