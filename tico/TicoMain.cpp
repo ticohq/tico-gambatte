@@ -17,6 +17,7 @@
 #include <json.hpp>
 #include <strings.h>
 #include <algorithm>
+#include <cctype>
 #include <cmath>
 #include <memory>
 #include <cstdio>
@@ -58,6 +59,12 @@ namespace ImGuiOverlay = SwitchFrontend::ImGuiOverlay;
 namespace OverlayConfig = SwitchFrontend::TicoConfig;
 
 static std::unique_ptr<TicoCore> g_core;
+
+// Started without a game: the library lists the ROM folders, and leaving a
+// game returns to it instead of chainloading tico.
+static bool g_standalone = false;
+static std::string g_pendingLaunch;
+static void ShowLibrary();
 
 // Quick menu
 static bool g_menuOpen = false;
@@ -835,6 +842,15 @@ static void RunMenuAction()
         return;
     case Action::Exit:
         LOG_INFO("HOME", "Exit requested");
+        if (g_standalone)
+        {
+            // a game returns to the library; the library itself quits
+            if (g_core)
+                ShowLibrary();
+            else
+                g_running = false;
+            return;
+        }
         CloseMenu();
         ChainloadTico();
         g_running = false;
@@ -946,6 +962,8 @@ static ImVec4 ComputeGameRect(ImVec2 displaySize)
 static void DrawGame(VkCommandBuffer cmd, ImDrawList *dl, ImVec2 displaySize)
 {
     dl->AddRectFilled(ImVec2(0, 0), displaySize, IM_COL32(0, 0, 0, 255));
+    if (!g_core)
+        return; // the library: no game, and no stale frame behind it
     const ImVec4 rect = ComputeGameRect(displaySize);
     if (!g_chain || !cmd || rect.z < 1.0f || rect.w < 1.0f)
         return;
@@ -1095,6 +1113,214 @@ static bool FastForwardUncapped()
            OverlayConfig::GetConfigValue("fast_forward_speed", "200") == "unlimited";
 }
 
+//==============================================================================
+// Library (standalone launch)
+//==============================================================================
+
+static const char *kRomExtensions[] = {".gb", ".gbc", ".dmg"};
+
+static std::string LowerExtension(const std::string &path)
+{
+    const size_t dot = path.find_last_of('.');
+    const size_t slash = path.find_last_of('/');
+    if (dot == std::string::npos || (slash != std::string::npos && dot < slash))
+        return std::string();
+    std::string ext = path.substr(dot);
+    std::transform(ext.begin(), ext.end(), ext.begin(),
+                   [](unsigned char c) { return (char)std::tolower(c); });
+    return ext;
+}
+
+// The console a ROM belongs to: its folder when that is gb or gbc (tico's
+// layout), otherwise its extension.
+static std::string SlugForRom(const std::string &path)
+{
+    const size_t slash = path.find_last_of('/');
+    if (slash != std::string::npos)
+    {
+        const std::string dir = path.substr(0, slash);
+        const std::string parent = dir.substr(dir.find_last_of('/') + 1);
+        if (parent == "gb" || parent == "gbc")
+            return parent;
+    }
+    return LowerExtension(path) == ".gbc" ? "gbc" : "gb";
+}
+
+// tico's ROM folders for both consoles, following the module's Paths tab.
+static std::vector<std::string> DefaultRomFolders()
+{
+    std::string root = OverlayConfig::GetConfigValue("tico_roms_path", "");
+    if (root.empty())
+        root = "sdmc:/tico/roms/";
+    if (root.back() != '/')
+        root += '/';
+    return {root + "gb/", root + "gbc/"};
+}
+
+// Folders the user added in Settings > Library (library_folders in gambatte.jsonc).
+static std::vector<std::string> UserRomFolders()
+{
+    std::vector<std::string> folders;
+    const std::string text = OverlayConfig::GetConfigJson("library_folders");
+    const nlohmann::json j = text.empty() ? nlohmann::json::array()
+                                          : nlohmann::json::parse(text, nullptr, false);
+    if (j.is_array())
+        for (const auto &entry : j)
+            if (entry.is_string() && !entry.get<std::string>().empty())
+                folders.push_back(entry.get<std::string>());
+    return folders;
+}
+
+static void SaveUserRomFolders(const std::vector<std::string> &folders)
+{
+    OverlayConfig::SetConfigJson("library_folders", nlohmann::json(folders).dump());
+    OverlayConfig::SaveConfig();
+}
+
+static void ScanRomFolder(const std::string &dir, int depth, std::vector<std::string> &out)
+{
+    DIR *d = opendir(dir.c_str());
+    if (!d)
+        return;
+    while (struct dirent *e = readdir(d))
+    {
+        const std::string name = e->d_name;
+        if (name.empty() || name[0] == '.')
+            continue;
+        const std::string path = (dir.back() == '/' ? dir : dir + "/") + name;
+        bool isDir = e->d_type == DT_DIR;
+        if (e->d_type == DT_UNKNOWN)
+        {
+            struct stat st;
+            isDir = stat(path.c_str(), &st) == 0 && S_ISDIR(st.st_mode);
+        }
+        if (isDir)
+        {
+            if (depth > 0)
+                ScanRomFolder(path, depth - 1, out);
+            continue;
+        }
+        const std::string ext = LowerExtension(name);
+        for (const char *known : kRomExtensions)
+            if (ext == known)
+                out.push_back(path);
+    }
+    closedir(d);
+}
+
+static std::vector<OverlayUI::LibraryEntry> ListLibrary()
+{
+    std::vector<std::string> folders = DefaultRomFolders();
+    for (const std::string &folder : UserRomFolders())
+        folders.push_back(folder);
+    std::vector<std::string> roms;
+    for (const std::string &folder : folders)
+        ScanRomFolder(folder, 2, roms);
+    std::sort(roms.begin(), roms.end());
+    roms.erase(std::unique(roms.begin(), roms.end()), roms.end());
+
+    std::vector<OverlayUI::LibraryEntry> entries;
+    for (const std::string &path : roms)
+    {
+        const std::string filename = path.substr(path.find_last_of('/') + 1);
+        std::string title = TicoUtils::GetCleanTitle(filename);
+        if (title.empty())
+            title = filename;
+        std::string detail = SlugForRom(path);
+        std::transform(detail.begin(), detail.end(), detail.begin(),
+                       [](unsigned char c) { return (char)std::toupper(c); });
+        entries.push_back({title, detail, path});
+    }
+    std::sort(entries.begin(), entries.end(), [](const auto &a, const auto &b) {
+        return strcasecmp(a.title.c_str(), b.title.c_str()) < 0;
+    });
+    return entries;
+}
+
+static void RegisterLibrary()
+{
+    OverlayUI::LibraryCallbacks library;
+    library.list = [] { return ListLibrary(); };
+    library.launch = [](const std::string &path) { g_pendingLaunch = path; };
+    OverlayUI::SetLibraryCallbacks(std::move(library));
+
+    OverlayUI::LibraryFolderCallbacks folders;
+    folders.defaults = [] { return DefaultRomFolders(); };
+    folders.folders = [] { return UserRomFolders(); };
+    folders.add = [](const std::string &path) {
+        std::vector<std::string> current = UserRomFolders();
+        const std::vector<std::string> defaults = DefaultRomFolders();
+        if (std::find(current.begin(), current.end(), path) == current.end() &&
+            std::find(defaults.begin(), defaults.end(), path) == defaults.end())
+        {
+            current.push_back(path);
+            SaveUserRomFolders(current);
+        }
+    };
+    folders.remove = [](const std::string &path) {
+        std::vector<std::string> current = UserRomFolders();
+        current.erase(std::remove(current.begin(), current.end(), path), current.end());
+        SaveUserRomFolders(current);
+    };
+    OverlayUI::SetLibraryFolderCallbacks(std::move(folders));
+}
+
+// Creates the core for a game and loads it. The console picks the save and
+// state folders, so it is set before the core, which reads them when created.
+static void StartGame(const std::string &slug, const std::string &romPath, const std::string &titleArg)
+{
+    TicoConfig::SetSlug(slug);
+    LOG_INFO("HOME", "Console slug: %s, ROM: %s", slug.c_str(), romPath.c_str());
+    TicoConfig::MakeDirs(TicoConfig::SavesPath());
+    TicoConfig::MakeDirs(TicoConfig::StatesPath());
+    TicoConfig::MakeDirs(TicoConfig::SystemPath());
+
+    g_core = std::make_unique<TicoCore>();
+    g_core->EnsureConfigLoaded();
+    ApplySettingsToCore();
+    g_core->SetAudioCallbacks(AudioSampleCallback, AudioSampleBatchCallback, AudioFlushCallback);
+    g_core->SetVideoCallback(VideoCallback);
+
+    const size_t lastSlash = romPath.find_last_of("/\\");
+    const std::string filename = lastSlash != std::string::npos ? romPath.substr(lastSlash + 1) : romPath;
+    // Prefer the launcher-supplied title; fall back to the rom filename.
+    std::string cleanTitle = titleArg.empty() ? TicoUtils::GetCleanTitle(filename) : titleArg;
+    if (cleanTitle.empty())
+        cleanTitle = filename;
+    OverlayUI::SetGameTitle(cleanTitle);
+    OverlayUI::SetLibraryMode(false);
+
+    if (!g_core->LoadGame(romPath))
+    {
+        LOG_ERROR("HOME", "Failed to load ROM: %s", romPath.c_str());
+        if (g_standalone)
+        {
+            ShowLibrary();
+            OverlayUI::ShowToast(SwitchFrontend::OverlayTranslation::tr("emulator_load_game_failed"),
+                                 OverlayUI::ToastCorner::TopRight);
+        }
+        return;
+    }
+    g_audio.SetCoreSampleRate(g_core->GetSampleRate());
+    LOG_INFO("AUDIO", "Configured audio pipeline for %.0f Hz core output", g_core->GetSampleRate());
+}
+
+// Back to the library: the core unloads (saving the game and its clock).
+static void ShowLibrary()
+{
+    if (g_core)
+    {
+        TicoVulkan::WaitIdle();
+        g_core.reset();
+    }
+    StopFastForward();
+    OverlayUI::SetGameTitle("Gambatte");
+    OverlayUI::SetLibraryMode(true);
+    if (g_menuOpen)
+        CloseMenu();
+    OpenMenu();
+}
+
 void HandleInput()
 {
     SDL_GameController *controllers[4] = {nullptr, nullptr, nullptr, nullptr};
@@ -1115,6 +1341,15 @@ void HandleInput()
     if (!g_running)
         return;
 
+    if (!g_pendingLaunch.empty())
+    {
+        const std::string path = g_pendingLaunch;
+        g_pendingLaunch.clear();
+        CloseMenu();
+        StartGame(SlugForRom(path), path, std::string());
+        return;
+    }
+
     SDL_GameController *pad = numControllers > 0 ? controllers[0] : nullptr;
     if (pad && g_overlayReady)
     {
@@ -1123,7 +1358,8 @@ void HandleInput()
         const bool select = SDL_GameControllerGetButton(pad, SDL_CONTROLLER_BUTTON_BACK);
         const bool guide = SDL_GameControllerGetButton(pad, SDL_CONTROLLER_BUTTON_GUIDE);
         const bool toggle = guide || (start && select);
-        if (toggle && !g_toggleHeld)
+        // the library stays open while no game runs
+        if (toggle && !g_toggleHeld && g_core)
         {
             if (g_menuOpen)
                 CloseMenu();
@@ -1347,41 +1583,8 @@ int main(int argc, char *argv[])
     g_lastOperationMode = 255;
 #endif
 
-    // Parse arguments: argv[1] = console slug, argv[2] = ROM path, argv[3] = title
-    std::string slug = "gbc";
-    std::string romPath = TicoConfig::TEST_ROM;
-    std::string titleArg;
-
-    if (argc >= 3) {
-        slug = argv[1];
-        romPath = argv[2];
-        if (argc >= 4 && argv[3])
-            titleArg = argv[3];
-    } else if (argc == 2) {
-        // Fallback: single arg is ROM path
-        romPath = argv[1];
-    }
-
-    // The console picks the save and state folders, so it is set before the
-    // core, which reads them when it is created.
-    TicoConfig::SetSlug(slug);
-    LOG_INFO("HOME", "Console slug: %s", slug.c_str());
-    LOG_INFO("HOME", "ROM path: %s", romPath.c_str());
-    LOG_INFO("HOME", "Configured paths for slug '%s': saves=%s states=%s system=%s",
-             slug.c_str(), TicoConfig::SavesPath().c_str(), TicoConfig::StatesPath().c_str(),
-             TicoConfig::SystemPath().c_str());
-    TicoConfig::MakeDirs(TicoConfig::SavesPath());
-    TicoConfig::MakeDirs(TicoConfig::StatesPath());
-    TicoConfig::MakeDirs(TicoConfig::SystemPath());
-
-    LOG_INFO("HOME", "Creating core...");
-    g_core = std::make_unique<TicoCore>();
-    g_core->EnsureConfigLoaded();
     OverlayConfig::ReloadConfig();
-    ApplySettingsToCore();
-
-    g_core->SetAudioCallbacks(AudioSampleCallback, AudioSampleBatchCallback, AudioFlushCallback);
-    g_core->SetVideoCallback(VideoCallback);
+    MigrateShaderSetting();
 
     if (!g_audio.Init(g_audioDevice))
     {
@@ -1391,34 +1594,28 @@ int main(int argc, char *argv[])
     g_overlayReady = ImGuiOverlay::Init();
     OverlayUI::SetSlotOccupiedCallback([](int slot) {
         struct stat st;
-        return slot >= 1 && stat(StatePath(slot - 1).c_str(), &st) == 0;
+        return g_core && slot >= 1 && stat(StatePath(slot - 1).c_str(), &st) == 0;
     });
-    MigrateShaderSetting();
     RegisterShaderMenu();
     OverlayUI::ReloadSettings();
-    LOG_INFO("HOME", "Core and overlay created");
 
+    // tico launches with argv[1] = console slug, argv[2] = ROM path,
+    // argv[3] = title. Without a ROM (e.g. from the homebrew menu) the library
+    // lists the ROM folders instead.
+    if (argc >= 3)
     {
-        size_t lastSlash = romPath.find_last_of("/\\");
-        std::string filename = (lastSlash != std::string::npos) ? romPath.substr(lastSlash + 1) : romPath;
-
-        // Prefer the launcher-supplied title; fall back to the rom filename.
-        std::string cleanTitle = titleArg.empty() ? TicoUtils::GetCleanTitle(filename) : titleArg;
-        if (cleanTitle.empty())
-            cleanTitle = filename;
-
-        OverlayUI::SetGameTitle(cleanTitle);
+        StartGame(argv[1], argv[2], argc >= 4 && argv[3] ? argv[3] : "");
     }
-
-    LOG_INFO("HOME", "Loading ROM: %s", romPath.c_str());
-    if (!g_core->LoadGame(romPath))
+    else if (argc == 2)
     {
-        LOG_ERROR("HOME", "Failed to load ROM: %s", romPath.c_str());
+        // a single argument is the ROM path
+        StartGame(SlugForRom(argv[1]), argv[1], std::string());
     }
     else
     {
-        g_audio.SetCoreSampleRate(g_core->GetSampleRate());
-        LOG_INFO("AUDIO", "Configured audio pipeline for %.0f Hz core output", g_core->GetSampleRate());
+        g_standalone = true;
+        RegisterLibrary();
+        ShowLibrary();
     }
 
     // Frame pacing is handled entirely by vsync (FIFO presentation). Audio is
@@ -1453,6 +1650,8 @@ int main(int argc, char *argv[])
     TicoVulkan::WaitIdle();
     OverlayUI::SetSlotOccupiedCallback(nullptr);
     OverlayUI::SetShaderCallbacks({});
+    OverlayUI::SetLibraryCallbacks({});
+    OverlayUI::SetLibraryFolderCallbacks({});
     ImGuiOverlay::Shutdown();
     g_core.reset();
 

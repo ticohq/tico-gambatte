@@ -11,6 +11,9 @@
 #include <cmath>
 #include <cstdio>
 #include <ctime>
+#include <dirent.h>
+#include <strings.h>
+#include <sys/stat.h>
 #include <mutex>
 #include <string_view>
 #include <vector>
@@ -47,6 +50,8 @@ enum class MenuScreen {
     SettingsCategories,
     SettingsOptions,
     ShaderBrowser,
+    Library,
+    FolderBrowser,
 };
 
 enum class QuickItem {
@@ -69,6 +74,8 @@ struct MenuRow {
     bool has_checkbox = false;
     bool checked = false;
     bool dimmed = false;
+    // the value is information, not something left/right changes
+    bool static_value = false;
 };
 
 std::string s_title;
@@ -97,6 +104,12 @@ std::vector<DiscMenuEntry> s_disc_entries;
 std::array<bool, kOverlaySlotCount> s_slot_occupied{};
 std::vector<int> s_rewind_points;
 ShaderCallbacks s_shader_cb;
+LibraryCallbacks s_library_cb;
+LibraryFolderCallbacks s_folder_cb;
+bool s_library_mode = false;
+std::vector<LibraryEntry> s_library_entries;
+std::string s_folder_dir;
+std::vector<std::string> s_folder_subdirs;
 std::string s_browse_dir;
 std::vector<ShaderBrowseEntry> s_browse_entries;
 
@@ -340,18 +353,43 @@ std::string QuickItemLabel(QuickItem item) {
     }
 }
 
-bool HasShaderCategory() {
-    return static_cast<bool>(s_shader_cb.parameters);
+// Categories the frontend adds after the settings.json ones.
+enum class ExtraCategory {
+    None,
+    Shaders,
+    Library,
+};
+
+std::vector<ExtraCategory> ExtraCategories() {
+    std::vector<ExtraCategory> extra;
+    if (s_shader_cb.parameters) {
+        extra.push_back(ExtraCategory::Shaders);
+    }
+    if (s_folder_cb.folders) {
+        extra.push_back(ExtraCategory::Library);
+    }
+    return extra;
 }
 
-// The Shaders category sits after the settings.json ones.
 int CategoryCount() {
-    return static_cast<int>(TicoConfig::GetCategories().size()) + (HasShaderCategory() ? 1 : 0);
+    return static_cast<int>(TicoConfig::GetCategories().size() + ExtraCategories().size());
+}
+
+ExtraCategory ExtraCategoryAt(int index) {
+    const int extra_index = index - static_cast<int>(TicoConfig::GetCategories().size());
+    const std::vector<ExtraCategory> extra = ExtraCategories();
+    if (extra_index < 0 || extra_index >= static_cast<int>(extra.size())) {
+        return ExtraCategory::None;
+    }
+    return extra[static_cast<std::size_t>(extra_index)];
 }
 
 bool ShaderCategoryActive() {
-    return HasShaderCategory() &&
-           s_category_selected == static_cast<int>(TicoConfig::GetCategories().size());
+    return ExtraCategoryAt(s_category_selected) == ExtraCategory::Shaders;
+}
+
+bool LibraryCategoryActive() {
+    return ExtraCategoryAt(s_category_selected) == ExtraCategory::Library;
 }
 
 std::string CategoryLabel(int index) {
@@ -360,7 +398,74 @@ std::string CategoryLabel(int index) {
         const auto& category = categories[static_cast<std::size_t>(index)];
         return TrLabel(category.label_key, category.fallback);
     }
-    return TrOr("emulator_shaders", "Shaders");
+    return ExtraCategoryAt(index) == ExtraCategory::Library ? TrOr("emulator_library", "Library")
+                                                            : TrOr("emulator_shaders", "Shaders");
+}
+
+MenuScreen RootScreen() {
+    return s_library_mode ? MenuScreen::Library : MenuScreen::QuickMenu;
+}
+
+// The Library category: default folders, the user's, then "Add folder".
+std::vector<MenuRow> BuildFolderRows() {
+    std::vector<MenuRow> rows;
+    const std::vector<std::string> defaults =
+        s_folder_cb.defaults ? s_folder_cb.defaults() : std::vector<std::string>{};
+    for (const std::string& path : defaults) {
+        MenuRow row{path};
+        row.value = TrOr("emulator_default", "Default");
+        row.static_value = true;
+        row.dimmed = true;
+        rows.push_back(row);
+    }
+    const std::vector<std::string> folders =
+        s_folder_cb.folders ? s_folder_cb.folders() : std::vector<std::string>{};
+    for (const std::string& path : folders) {
+        MenuRow row{path};
+        row.value = TrOr("emulator_remove", "Remove");
+        row.static_value = true;
+        rows.push_back(row);
+    }
+    rows.push_back({TrOr("emulator_add_folder", "Add folder")});
+    return rows;
+}
+
+void OpenFolderBrowser(std::string dir) {
+    if (dir.empty() || dir.back() != '/') {
+        dir += '/';
+    }
+    s_folder_dir = dir;
+    s_folder_subdirs.clear();
+    if (DIR* d = opendir(dir.c_str())) {
+        while (struct dirent* e = readdir(d)) {
+            const std::string name = e->d_name;
+            if (name.empty() || name[0] == '.') {
+                continue;
+            }
+            bool is_dir = e->d_type == DT_DIR;
+            if (e->d_type == DT_UNKNOWN) {
+                struct stat st;
+                is_dir = stat((dir + name).c_str(), &st) == 0 && S_ISDIR(st.st_mode);
+            }
+            if (is_dir) {
+                s_folder_subdirs.push_back(name);
+            }
+        }
+        closedir(d);
+    }
+    std::sort(s_folder_subdirs.begin(), s_folder_subdirs.end(),
+              [](const std::string& a, const std::string& b) {
+                  return strcasecmp(a.c_str(), b.c_str()) < 0;
+              });
+    s_menu = MenuScreen::FolderBrowser;
+    s_selected = 0;
+}
+
+// The parent of a folder path ending in '/'; the root (e.g. "sdmc:/") is its own.
+std::string ParentFolder(const std::string& dir) {
+    const std::string trimmed = dir.substr(0, dir.size() - 1);
+    const std::size_t slash = trimmed.find_last_of('/');
+    return slash == std::string::npos ? dir : trimmed.substr(0, slash + 1);
 }
 
 std::string FormatParameter(float value) {
@@ -434,7 +539,7 @@ const TicoConfig::OptionCategory& CurrentCategory() {
 // depend on another's value (FSR sharpness only shows with the FSR filter).
 std::vector<const TicoConfig::OptionDef*> VisibleOptions() {
     std::vector<const TicoConfig::OptionDef*> options;
-    if (ShaderCategoryActive()) {
+    if (ExtraCategoryAt(s_category_selected) != ExtraCategory::None) {
         return options;
     }
     const TicoConfig::OptionCategory& category = CurrentCategory();
@@ -502,6 +607,9 @@ void ReloadHudPositions() {
 std::vector<MenuRow> BuildOptionRows() {
     if (ShaderCategoryActive()) {
         return BuildShaderRows();
+    }
+    if (LibraryCategoryActive()) {
+        return BuildFolderRows();
     }
     std::vector<MenuRow> rows;
     for (const TicoConfig::OptionDef* shown : VisibleOptions()) {
@@ -588,6 +696,33 @@ std::vector<MenuRow> BuildRows() {
             rows.push_back({CategoryLabel(i)});
         }
         break;
+    case MenuScreen::Library: {
+        rows.push_back({TrOr("emulator_settings", "Settings")});
+        for (const LibraryEntry& entry : s_library_entries) {
+            MenuRow row{entry.title};
+            row.value = entry.detail;
+            row.static_value = true;
+            rows.push_back(row);
+        }
+        if (s_library_entries.empty()) {
+            MenuRow row{TrOr("emulator_no_games", "No games found. Add a folder in Settings > Library")};
+            row.dimmed = true;
+            rows.push_back(row);
+        }
+        rows.push_back({TrOr("emulator_exit", "Exit")});
+        break;
+    }
+    case MenuScreen::FolderBrowser: {
+        MenuRow use{TrOr("emulator_use_folder", "Use this folder")};
+        use.value = s_folder_dir;
+        use.static_value = true;
+        rows.push_back(use);
+        rows.push_back({".."});
+        for (const std::string& name : s_folder_subdirs) {
+            rows.push_back({name + "/"});
+        }
+        break;
+    }
     case MenuScreen::ShaderBrowser:
         for (const ShaderBrowseEntry& entry : s_browse_entries) {
             rows.push_back({entry.label});
@@ -625,6 +760,9 @@ std::string BuildTitle() {
         break;
     case MenuScreen::ShaderBrowser:
         title = TrOr("emulator_shader", "Shader");
+        break;
+    case MenuScreen::FolderBrowser:
+        title = TrOr("emulator_add_folder", "Add folder");
         break;
     case MenuScreen::SettingsCategories:
     case MenuScreen::SettingsOptions:
@@ -783,7 +921,7 @@ void DrawRowContent(ImDrawList* dl, const MenuRow& row, ImVec2 item_min, ImVec2 
         const float value_y = item_min.y + ((item_height - value_size.y) * 0.5f);
         dl->AddText(font, label_size, ImVec2(value_x, value_y), text_color, value.c_str());
 
-        if (selected) {
+        if (selected && !row.static_value) {
             const float arrow_y = item_min.y + ((item_height - arrow_size) * 0.5f);
             const float left_x = value_x - arrow_gap - arrow_size;
             dl->AddTriangleFilled(ImVec2(left_x, arrow_y + (arrow_size * 0.5f)),
@@ -821,7 +959,8 @@ void DrawScrollbar(ImDrawList* dl, float x, float top, float height, int first_v
 // Draws the current screen's rows. Lists longer than kMaxVisibleRows scroll to
 // keep the selection in view; rows with a value get change arrows when selected.
 void RenderMenu(ImDrawList* dl, ImVec2 display_size, float ease, const std::vector<MenuRow>& rows) {
-    const bool wide = s_menu == MenuScreen::Cheats || s_menu == MenuScreen::ShaderBrowser;
+    const bool wide = s_menu == MenuScreen::Cheats || s_menu == MenuScreen::ShaderBrowser ||
+                      s_menu == MenuScreen::Library || s_menu == MenuScreen::FolderBrowser;
     const float scale = ImGui::GetIO().FontGlobalScale;
     const float menu_width = kMenuWidth * (wide ? 1.5f : 1.0f) * scale;
     const float item_height = (wide ? 58.0f : 64.0f) * scale;
@@ -995,7 +1134,7 @@ void RenderHelpersBar(ImDrawList* dl, ImVec2 display_size, float ease) {
         accept = TrOr("emulator_toggle", "Toggle");
     else if (s_menu == MenuScreen::SettingsOptions)
         accept = TrOr("emulator_change", "Change");
-    else if (s_menu == MenuScreen::ShaderBrowser)
+    else if (s_menu == MenuScreen::ShaderBrowser || s_menu == MenuScreen::FolderBrowser)
         accept = TrOr("emulator_select", "Select");
 
     const std::array<Helper, 2> helpers = {{
@@ -1412,6 +1551,42 @@ Action AcceptSelection(const std::vector<MenuRow>& rows) {
         s_category_selected = s_selected;
         OpenScreen(MenuScreen::SettingsOptions);
         return Action::None;
+    case MenuScreen::Library: {
+        s_quick_selected = s_selected;
+        const int game_rows = static_cast<int>(s_library_entries.size());
+        if (s_selected == 0) {
+            OpenScreen(MenuScreen::SettingsCategories);
+            return Action::None;
+        }
+        if (s_selected == static_cast<int>(rows.size()) - 1) {
+            return Action::Exit;
+        }
+        if (game_rows > 0 && s_selected <= game_rows && s_library_cb.launch) {
+            s_library_cb.launch(s_library_entries[static_cast<std::size_t>(s_selected - 1)].path);
+        }
+        return Action::None;
+    }
+    case MenuScreen::FolderBrowser: {
+        if (s_selected == 0) {
+            if (s_folder_cb.add) {
+                s_folder_cb.add(s_folder_dir);
+            }
+            RefreshLibrary();
+            s_menu = MenuScreen::SettingsOptions;
+            s_selected = 0;
+        } else if (s_selected == 1) {
+            const std::string from = s_folder_dir;
+            OpenFolderBrowser(ParentFolder(s_folder_dir));
+            for (std::size_t i = 0; i < s_folder_subdirs.size(); ++i) {
+                if (s_folder_dir + s_folder_subdirs[i] + "/" == from) {
+                    s_selected = static_cast<int>(i) + 2;
+                }
+            }
+        } else {
+            OpenFolderBrowser(s_folder_dir + s_folder_subdirs[static_cast<std::size_t>(s_selected - 2)]);
+        }
+        return Action::None;
+    }
     case MenuScreen::ShaderBrowser: {
         if (s_browse_entries.empty()) {
             return Action::None;
@@ -1436,6 +1611,20 @@ Action AcceptSelection(const std::vector<MenuRow>& rows) {
         return Action::None;
     }
     case MenuScreen::SettingsOptions: {
+        if (LibraryCategoryActive()) {
+            const std::size_t default_count =
+                s_folder_cb.defaults ? s_folder_cb.defaults().size() : 0;
+            const std::vector<std::string> folders =
+                s_folder_cb.folders ? s_folder_cb.folders() : std::vector<std::string>{};
+            const int index = s_selected - static_cast<int>(default_count);
+            if (s_selected == static_cast<int>(rows.size()) - 1) {
+                OpenFolderBrowser("sdmc:/");
+            } else if (index >= 0 && index < static_cast<int>(folders.size()) && s_folder_cb.remove) {
+                s_folder_cb.remove(folders[static_cast<std::size_t>(index)]);
+                RefreshLibrary();
+            }
+            return Action::None;
+        }
         if (ShaderCategoryActive()) {
             const int parameter_count = static_cast<int>(rows.size()) - 2;
             if (s_selected == 0) {
@@ -1470,6 +1659,13 @@ Action CancelScreen() {
     switch (s_menu) {
     case MenuScreen::QuickMenu:
         return Action::Resume;
+    case MenuScreen::Library:
+        // the library is the root while no game runs; Exit leaves it
+        break;
+    case MenuScreen::FolderBrowser:
+        s_menu = MenuScreen::SettingsOptions;
+        s_selected = static_cast<int>(BuildFolderRows().size()) - 1;
+        break;
     case MenuScreen::SettingsOptions:
         s_menu = MenuScreen::SettingsCategories;
         s_selected = s_category_selected;
@@ -1479,7 +1675,7 @@ Action CancelScreen() {
         s_selected = 0;
         break;
     default:
-        s_menu = MenuScreen::QuickMenu;
+        s_menu = RootScreen();
         s_selected = s_quick_selected;
         break;
     }
@@ -1495,13 +1691,16 @@ void SetVisible(bool visible) {
         s_quick_selected = 0;
         s_category_selected = 0;
         RefreshDiscs();
-        OpenScreen(MenuScreen::QuickMenu);
+        if (s_library_mode) {
+            RefreshLibrary();
+        }
+        OpenScreen(RootScreen());
     } else if (!visible) {
         s_anim_timer = 0.0f;
         s_cheat_entries.clear();
         s_rewind_points.clear();
         s_disc_entries.clear();
-        OpenScreen(MenuScreen::QuickMenu);
+        OpenScreen(RootScreen());
     }
 
     s_visible = visible;
@@ -1544,6 +1743,23 @@ void RefreshCheatList() {
 void SetRewindCallback(RewindListFn callback) {
     s_rewind_list_cb = std::move(callback);
     s_rewind_points.clear();
+}
+
+void SetLibraryCallbacks(LibraryCallbacks callbacks) {
+    s_library_cb = std::move(callbacks);
+    s_library_entries.clear();
+}
+
+void SetLibraryMode(bool library) {
+    s_library_mode = library;
+}
+
+void RefreshLibrary() {
+    s_library_entries = s_library_cb.list ? s_library_cb.list() : std::vector<LibraryEntry>{};
+}
+
+void SetLibraryFolderCallbacks(LibraryFolderCallbacks callbacks) {
+    s_folder_cb = std::move(callbacks);
 }
 
 void SetShaderCallbacks(ShaderCallbacks callbacks) {

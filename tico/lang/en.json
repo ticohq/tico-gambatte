@@ -182,5 +182,12 @@
     "settings_gambatte_tab_input": "Input",
     "settings_gambatte_tab_system": "System",
     "settings_gambatte_tab_video": "Video",
-    "settings_gambatte_turbo_period": "Turbo Period"
+    "settings_gambatte_turbo_period": "Turbo Period",
+    "emulator_library": "Library",
+    "emulator_remove": "Remove",
+    "emulator_add_folder": "Add folder",
+    "emulator_use_folder": "Use this folder",
+    "emulator_no_games": "No games found. Add a folder in Settings > Library",
+    "emulator_exit": "Exit",
+    "emulator_load_game_failed": "The game could not be loaded"
 }

@@ -127,6 +127,38 @@ struct ShaderCallbacks {
 // Pass a default-constructed struct to remove the category.
 void SetShaderCallbacks(ShaderCallbacks callbacks);
 
+// Library: when the core starts without a game, the menu's root is a list of
+// the games found in the ROM folders instead of the quick menu, with Settings
+// on top and Exit (Action::Exit) at the bottom.
+struct LibraryEntry {
+    std::string title;
+    // shown on the right, e.g. the system
+    std::string detail;
+    std::string path;
+};
+struct LibraryCallbacks {
+    // the games, read again each time the library opens
+    std::function<std::vector<LibraryEntry>()> list;
+    // a game was chosen
+    std::function<void(const std::string& path)> launch;
+};
+void SetLibraryCallbacks(LibraryCallbacks callbacks);
+// Whether the menu's root is the library (no game running) or the quick menu.
+void SetLibraryMode(bool library);
+// Reads the game list again, e.g. after the folders changed.
+void RefreshLibrary();
+
+// A "Library" category in Settings: the folders searched for games. Default
+// folders are listed but cannot be removed; choosing a user folder removes
+// it, and "Add folder" browses the SD card for a new one.
+struct LibraryFolderCallbacks {
+    std::function<std::vector<std::string>()> defaults;
+    std::function<std::vector<std::string>()> folders;
+    std::function<void(const std::string& path)> add;
+    std::function<void(const std::string& path)> remove;
+};
+void SetLibraryFolderCallbacks(LibraryFolderCallbacks callbacks);
+
 // The overlay renders on the presentation thread and never calls into the
 // emulator. The emulation thread polls these after each frame.
 
