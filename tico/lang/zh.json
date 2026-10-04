@@ -512,5 +512,9 @@
     "emulator_shaders": "着色器",
     "emulator_none": "无",
     "emulator_reset_parameters": "重置参数",
-    "emulator_no_shaders": "未找到着色器"
+    "emulator_no_shaders": "未找到着色器",
+    "emulator_hardcore_no_load": "硬核模式下无法读取即时存档",
+    "emulator_save_failed": "无法保存到存档槽 %d",
+    "emulator_load_failed": "无法读取存档槽 %d",
+    "emulator_hardcore_pause_wait": "硬核模式：%d 秒后可再次打开菜单"
 }

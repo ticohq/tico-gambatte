@@ -352,5 +352,9 @@
     "emulator_shaders": "Shader",
     "emulator_none": "Keiner",
     "emulator_reset_parameters": "Parameter zurücksetzen",
-    "emulator_no_shaders": "Keine Shader gefunden"
+    "emulator_no_shaders": "Keine Shader gefunden",
+    "emulator_hardcore_no_load": "Spielstände laden ist im Hardcore-Modus deaktiviert",
+    "emulator_save_failed": "Platz %d konnte nicht gespeichert werden",
+    "emulator_load_failed": "Platz %d konnte nicht geladen werden",
+    "emulator_hardcore_pause_wait": "Hardcore: Menü in %d s wieder verfügbar"
 }

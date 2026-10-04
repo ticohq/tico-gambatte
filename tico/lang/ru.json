@@ -192,5 +192,9 @@
     "emulator_shaders": "Шейдеры",
     "emulator_none": "Нет",
     "emulator_reset_parameters": "Сбросить параметры",
-    "emulator_no_shaders": "Шейдеры не найдены"
+    "emulator_no_shaders": "Шейдеры не найдены",
+    "emulator_hardcore_no_load": "Загрузка сохранений отключена в режиме Hardcore",
+    "emulator_save_failed": "Не удалось сохранить в слот %d",
+    "emulator_load_failed": "Не удалось загрузить слот %d",
+    "emulator_hardcore_pause_wait": "Hardcore: меню откроется через %d с"
 }

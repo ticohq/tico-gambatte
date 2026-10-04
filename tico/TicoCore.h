@@ -105,8 +105,23 @@ public:
     std::string GetGamePath() const { return m_gamePath; }
 
     /// @brief Save states
-    void SaveState(const std::string &path);
-    void LoadState(const std::string &path);
+    /// The state goes to `path`, rc_client's achievement progress beside it
+    /// (`path` + ".ra"). Loading is refused while hardcore is active.
+    bool SaveState(const std::string &path);
+    bool LoadState(const std::string &path);
+
+    /// True while rc_client runs the session in hardcore mode. Loading states
+    /// (and rewind, cheats, slow motion) must stay unavailable then.
+    bool IsHardcoreActive() const;
+
+    /// Hardcore rate-limits pausing so it can't be used to slow the game
+    /// down. False while a pause isn't allowed yet; `secondsRemaining` then
+    /// says how long until it is. Always true outside hardcore.
+    bool CanPause(int &secondsRemaining);
+
+    /// Keeps the RetroAchievements session alive while emulation is paused
+    /// (the quick menu is open): pings, server callbacks, badge uploads.
+    void Idle();
 
     /// @brief Core options. LoadConfig reads gambatte.jsonc (once); SetOption
     /// changes a libretro variable, which the core re-reads next frame.

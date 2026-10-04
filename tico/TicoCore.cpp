@@ -156,6 +156,7 @@ extern "C"
 
 // Static instance for callbacks
 static TicoCore *s_instance = nullptr;
+static const char *RAUserAgent();
 
 // HW render callback storage
 
@@ -237,6 +238,7 @@ void TicoCore::RAWorkerEntry(void* arg) {
         
         if (curl) {
             curl_easy_setopt(curl, CURLOPT_URL, job.url.c_str());
+            curl_easy_setopt(curl, CURLOPT_USERAGENT, RAUserAgent());
             if (!job.post_data.empty()) {
                 curl_easy_setopt(curl, CURLOPT_POSTFIELDS, job.post_data.c_str());
             }
@@ -327,6 +329,28 @@ void TicoCore::StopRAWorker() {
 #endif
 }
 
+#ifndef TICO_APP_VERSION
+#define TICO_APP_VERSION "dev"
+#endif
+
+// How RetroAchievements identifies this client: the frontend, the libretro
+// core and the rcheevos integration, like other libretro frontends report it.
+static const char *RAUserAgent()
+{
+    static std::string agent;
+    if (agent.empty())
+    {
+        retro_system_info info = {};
+        retro_get_system_info(&info);
+        agent = std::string("tico-gambatte/") + TICO_APP_VERSION + " (Nintendo Switch) gambatte_libretro/" +
+                (info.library_version ? info.library_version : "unknown");
+        char clause[64] = "";
+        if (rc_client_get_user_agent_clause(nullptr, clause, sizeof(clause)) > 0)
+            agent += std::string(" ") + clause;
+    }
+    return agent.c_str();
+}
+
 static void RC_CCONV RAServerCall(const rc_api_request_t* request, rc_client_server_callback_t callback, void* callback_data, rc_client_t* client)
 {
     if (!s_instance) return;
@@ -350,6 +374,7 @@ static void RC_CCONV RAServerCall(const rc_api_request_t* request, rc_client_ser
         long http_code = 0;
         if (curl) {
             curl_easy_setopt(curl, CURLOPT_URL, request->url);
+            curl_easy_setopt(curl, CURLOPT_USERAGENT, RAUserAgent());
             if (request->post_data) curl_easy_setopt(curl, CURLOPT_POSTFIELDS, request->post_data);
             curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, CurlWriteCallback);
             curl_easy_setopt(curl, CURLOPT_WRITEDATA, &readBuffer);
@@ -628,6 +653,12 @@ bool TicoCore::Init()
                         s_instance->PushRANotification("Leaderboard", event->leaderboard->title, "ra_icon");
                     }
                     break;
+                case RC_CLIENT_EVENT_RESET:
+                    // rc_client asks for a reset when hardcore turns on mid-game,
+                    // so nothing from the softcore session carries over.
+                    tico_debug_log("RA: reset requested by rc_client");
+                    s_instance->Reset();
+                    break;
                 case RC_CLIENT_EVENT_SERVER_ERROR:
                     if (event->server_error) {
                         tico_debug_log("RA: Server error: %s", event->server_error->error_message);
@@ -822,7 +853,44 @@ void TicoCore::Reset()
     if (m_gameLoaded)
     {
         retro_reset();
+        // achievement progress restarts with the game
+        if (m_rcClient)
+            rc_client_reset(m_rcClient);
     }
+}
+
+bool TicoCore::IsHardcoreActive() const
+{
+    return m_rcClient && rc_client_get_hardcore_enabled(m_rcClient);
+}
+
+bool TicoCore::CanPause(int &secondsRemaining)
+{
+    secondsRemaining = 0;
+    if (!m_gameLoaded || !IsHardcoreActive())
+        return true;
+    uint32_t framesRemaining = 0;
+    if (rc_client_can_pause(m_rcClient, &framesRemaining))
+        return true;
+    const double fps = m_fps > 0.0 ? m_fps : 60.0;
+    secondsRemaining = (int)((framesRemaining + fps - 1.0) / fps);
+    if (secondsRemaining < 1)
+        secondsRemaining = 1;
+    return false;
+}
+
+void TicoCore::Idle()
+{
+    ProcessPendingBadgeUploads();
+    std::vector<std::function<void()>> cbs;
+    {
+        std::lock_guard<std::mutex> lock(m_raCallbackMutex);
+        cbs = std::move(m_raPendingCallbacks);
+    }
+    for (auto &cb : cbs)
+        cb();
+    if (m_rcClient)
+        rc_client_idle(m_rcClient);
 }
 
 void TicoCore::Pause() { m_paused = true; }
@@ -858,51 +926,79 @@ void TicoCore::ClearInputs()
 // Save States
 //==============================================================================
 
-void TicoCore::SaveState(const std::string &path)
+// rc_client's achievement progress (hit counts, measured values) for a state
+// file, so loading it restores where every achievement stood.
+static std::string ProgressPath(const std::string &statePath)
+{
+    return statePath + ".ra";
+}
+
+bool TicoCore::SaveState(const std::string &path)
 {
     if (!m_gameLoaded)
-        return;
+        return false;
 
     size_t size = retro_serialize_size();
     if (size == 0)
     {
         tico_debug_log("SaveState: size 0");
-        return;
+        return false;
     }
 
     std::vector<uint8_t> data(size);
-    bool success = retro_serialize(data.data(), size);
-
-    if (success)
+    if (!retro_serialize(data.data(), size))
     {
-        FILE *fp = fopen(path.c_str(), "wb");
-        if (fp)
+        tico_debug_log("ERROR: retro_serialize failed");
+        return false;
+    }
+
+    FILE *fp = fopen(path.c_str(), "wb");
+    if (!fp)
+    {
+        tico_debug_log("ERROR: Failed to open file for save state: %s", path.c_str());
+        return false;
+    }
+    const bool written = fwrite(data.data(), 1, size, fp) == size;
+    fclose(fp);
+    tico_debug_log("Saved state to %s", path.c_str());
+
+    const std::string progressPath = ProgressPath(path);
+    const size_t progressSize = m_rcClient ? rc_client_progress_size(m_rcClient) : 0;
+    std::vector<uint8_t> progress(progressSize);
+    if (progressSize > 0 &&
+        rc_client_serialize_progress_sized(m_rcClient, progress.data(), progressSize) == RC_OK)
+    {
+        if (FILE *pf = fopen(progressPath.c_str(), "wb"))
         {
-            fwrite(data.data(), 1, size, fp);
-            fclose(fp);
-            tico_debug_log("Saved state to %s", path.c_str());
-        }
-        else
-        {
-            tico_debug_log("ERROR: Failed to open file for save state: %s", path.c_str());
+            fwrite(progress.data(), 1, progressSize, pf);
+            fclose(pf);
         }
     }
     else
     {
-        tico_debug_log("ERROR: retro_serialize failed");
+        // a stale file would restore progress from an older state
+        remove(progressPath.c_str());
     }
+    return written;
 }
 
-void TicoCore::LoadState(const std::string &path)
+bool TicoCore::LoadState(const std::string &path)
 {
     if (!m_gameLoaded)
-        return;
+        return false;
+
+    // RetroAchievements hardcore forbids loading states.
+    if (IsHardcoreActive())
+    {
+        tico_debug_log("LoadState: refused, hardcore mode is active");
+        return false;
+    }
 
     FILE *fp = fopen(path.c_str(), "rb");
     if (!fp)
     {
         tico_debug_log("LoadState: File not found: %s", path.c_str());
-        return;
+        return false;
     }
 
     fseek(fp, 0, SEEK_END);
@@ -912,14 +1008,14 @@ void TicoCore::LoadState(const std::string &path)
     if (fileSize == 0)
     {
         fclose(fp);
-        return;
+        return false;
     }
 
     std::vector<uint8_t> data(fileSize);
     if (fread(data.data(), 1, fileSize, fp) != fileSize)
     {
         fclose(fp);
-        return;
+        return false;
     }
     fclose(fp);
 
@@ -935,6 +1031,28 @@ void TicoCore::LoadState(const std::string &path)
     if (success)
     {
         tico_debug_log("Loaded state from %s", path.c_str());
+        // Restore achievement progress with the state; a state saved without
+        // it resets progress, so nothing from the abandoned timeline counts.
+        if (m_rcClient)
+        {
+            std::vector<uint8_t> progress;
+            if (FILE *pf = fopen(ProgressPath(path).c_str(), "rb"))
+            {
+                fseek(pf, 0, SEEK_END);
+                const long progressSize = ftell(pf);
+                fseek(pf, 0, SEEK_SET);
+                if (progressSize > 0)
+                {
+                    progress.resize((size_t)progressSize);
+                    if (fread(progress.data(), 1, progress.size(), pf) != progress.size())
+                        progress.clear();
+                }
+                fclose(pf);
+            }
+            if (progress.empty() ||
+                rc_client_deserialize_progress_sized(m_rcClient, progress.data(), progress.size()) != RC_OK)
+                rc_client_deserialize_progress_sized(m_rcClient, nullptr, 0);
+        }
         tico_debug_log("Running one frame to force display update...");
         retro_run();
     }
@@ -942,6 +1060,7 @@ void TicoCore::LoadState(const std::string &path)
     {
         tico_debug_log("ERROR: retro_unserialize failed");
     }
+    return success;
 }
 
 //==============================================================================
@@ -1602,6 +1721,7 @@ void TicoCore::DownloadAndCacheBadge(const std::string& badge_name)
     if (!curl) return;
     
     curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
+    curl_easy_setopt(curl, CURLOPT_USERAGENT, RAUserAgent());
     curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, CurlWriteCallback);
     curl_easy_setopt(curl, CURLOPT_WRITEDATA, &response);
     curl_easy_setopt(curl, CURLOPT_TIMEOUT, 10L);

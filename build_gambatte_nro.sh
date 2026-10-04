@@ -15,6 +15,8 @@ LIBNX=$DEVKITPRO/libnx
 ROOT_DIR="$(cd "$(dirname "$0")" && pwd)"
 BUILD_DIR="$ROOT_DIR/build_tico"
 TICO_DIR="$ROOT_DIR/tico"
+# NACP version, and the version RetroAchievements sees in the User-Agent
+APP_VERSION="1.0.3"
 
 # Rendering is Vulkan on Mesa's NVK, linked statically (a loaderless
 # libvulkan.a), as in tico-snes9x and tico-flycast. Point MESA_NVK_DIR at
@@ -83,7 +85,7 @@ CXX="${DEVKITA64}/bin/aarch64-none-elf-g++"
 
 COMMON_FLAGS="-march=armv8-a+crc+crypto -mtune=cortex-a57 -mtp=soft -fPIE -O2 -g"
 COMMON_FLAGS="$COMMON_FLAGS -ffunction-sections -fdata-sections -DDISABLE_LOGGING -D__SWITCH__ -DHAVE_LIBNX"
-COMMON_FLAGS="$COMMON_FLAGS -DVK_USE_PLATFORM_VI_NN"
+COMMON_FLAGS="$COMMON_FLAGS -DVK_USE_PLATFORM_VI_NN -DTICO_APP_VERSION=\"$APP_VERSION\""
 COMMON_FLAGS="$COMMON_FLAGS -I$LIBNX/include -I$PORTLIBS/include -I$PORTLIBS/include/SDL2"
 COMMON_FLAGS="$COMMON_FLAGS -I$TICO_DIR -I$TICO_DIR/deps"
 COMMON_FLAGS="$COMMON_FLAGS -I$TICO_DIR/deps/vulkan-headers"
@@ -235,7 +237,7 @@ NACPTOOL="$DEVKITPRO/tools/bin/nacptool"
 
 # Create NACP
 NACP_FILE="$BUILD_DIR/gambatte.nacp"
-$NACPTOOL --create "tico Gambatte" "ticoverse.com" "1.0.3" "$NACP_FILE"
+$NACPTOOL --create "tico Gambatte" "ticoverse.com" "$APP_VERSION" "$NACP_FILE"
 
 # Convert ELF to NRO with romfs
 ROMFS_DIR="$BUILD_DIR/romfs"

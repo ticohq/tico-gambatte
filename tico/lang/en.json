@@ -159,5 +159,9 @@
     "emulator_shaders": "Shaders",
     "emulator_none": "None",
     "emulator_reset_parameters": "Reset Parameters",
-    "emulator_no_shaders": "No shaders found"
+    "emulator_no_shaders": "No shaders found",
+    "emulator_hardcore_no_load": "Loading states is disabled in Hardcore mode",
+    "emulator_save_failed": "Slot %d could not be saved",
+    "emulator_load_failed": "Slot %d could not be loaded",
+    "emulator_hardcore_pause_wait": "Hardcore: the menu can open again in %d s"
 }

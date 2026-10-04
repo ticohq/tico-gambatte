@@ -730,6 +730,7 @@ static void ApplySettingsToCore()
 
 static std::string TrFormat(const char *key, int value)
 {
+    SwitchFrontend::OverlayTranslation::TranslationManager::Instance().Init();
     const std::string format = SwitchFrontend::OverlayTranslation::tr(key);
     char text[256];
     snprintf(text, sizeof(text), format.c_str(), value);
@@ -740,9 +741,17 @@ static void OpenMenu()
 {
     if (!g_overlayReady || g_menuOpen)
         return;
+    // Opening the menu pauses the game, which hardcore only allows so often.
+    int waitSeconds = 0;
+    if (g_core && !g_core->CanPause(waitSeconds))
+    {
+        OverlayUI::ShowToast(TrFormat("emulator_hardcore_pause_wait", waitSeconds));
+        return;
+    }
     g_menuOpen = true;
     g_navHeldPrev = 0;
     g_navRepeatFrames = 0;
+    OverlayUI::SetHardcoreMode(g_core && g_core->IsHardcoreActive());
     ImGuiOverlay::SetVisible(true);
 }
 
@@ -833,15 +842,20 @@ static void RunMenuAction()
     if (OverlayUI::IsSaveStateAction(action) && g_core)
     {
         const int slot = OverlayUI::GetStateSlotForAction(action);
-        g_core->SaveState(StatePath(slot - 1));
-        OverlayUI::ShowToast(TrFormat("emulator_state_saved", slot));
+        const bool saved = g_core->SaveState(StatePath(slot - 1));
+        OverlayUI::ShowToast(TrFormat(saved ? "emulator_state_saved" : "emulator_save_failed", slot));
         CloseMenu();
     }
     else if (OverlayUI::IsLoadStateAction(action) && g_core)
     {
         const int slot = OverlayUI::GetStateSlotForAction(action);
-        g_core->LoadState(StatePath(slot - 1));
-        OverlayUI::ShowToast(TrFormat("emulator_state_loaded", slot));
+        if (g_core->IsHardcoreActive())
+            OverlayUI::ShowToast(SwitchFrontend::OverlayTranslation::tr("emulator_hardcore_no_load"));
+        else
+        {
+            const bool loaded = g_core->LoadState(StatePath(slot - 1));
+            OverlayUI::ShowToast(TrFormat(loaded ? "emulator_state_loaded" : "emulator_load_failed", slot));
+        }
         CloseMenu();
     }
 }
@@ -1103,6 +1117,11 @@ void Render()
         if (frameCount <= 3)
             LOG_DEBUG("RENDER", "Frame %d: Calling RunFrame", frameCount);
         g_core->RunFrame();
+    }
+    else if (g_core)
+    {
+        // paused in the menu: keep the RetroAchievements session alive
+        g_core->Idle();
     }
 
     ApplyShaderPreset();

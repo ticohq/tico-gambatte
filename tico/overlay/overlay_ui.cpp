@@ -72,6 +72,7 @@ struct MenuRow {
 };
 
 std::string s_title;
+bool s_hardcore = false;
 std::string s_nickname;
 NavInput s_nav{};
 bool s_visible = false;
@@ -297,14 +298,18 @@ std::string TrLabel(const char* key, const std::string& fallback) {
 }
 
 std::vector<QuickItem> BuildQuickItems() {
-    std::vector<QuickItem> items = {QuickItem::SaveState, QuickItem::LoadState};
-    if (s_rewind_list_cb && TicoConfig::GetConfigValue("enable_rewind", "false") == "true") {
+    std::vector<QuickItem> items = {QuickItem::SaveState};
+    if (!s_hardcore) {
+        items.push_back(QuickItem::LoadState);
+    }
+    if (!s_hardcore && s_rewind_list_cb &&
+        TicoConfig::GetConfigValue("enable_rewind", "false") == "true") {
         items.push_back(QuickItem::Rewind);
     }
     if (s_disc_entries.size() > 1) {
         items.push_back(QuickItem::ChangeDisc);
     }
-    if (s_cheat_list_cb) {
+    if (!s_hardcore && s_cheat_list_cb) {
         items.push_back(QuickItem::Cheats);
     }
     items.push_back(QuickItem::Settings);
@@ -1500,6 +1505,10 @@ void SetVisible(bool visible) {
     }
 
     s_visible = visible;
+}
+
+void SetHardcoreMode(bool hardcore) {
+    s_hardcore = hardcore;
 }
 
 void SetGameTitle(std::string title) {
