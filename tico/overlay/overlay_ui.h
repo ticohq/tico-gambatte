@@ -148,14 +148,20 @@ void SetLibraryMode(bool library);
 // Reads the game list again, e.g. after the folders changed.
 void RefreshLibrary();
 
-// A "Library" category in Settings: the folders searched for games. Default
-// folders are listed but cannot be removed; choosing a user folder removes
-// it, and "Add folder" browses the SD card for a new one.
+// A "Library" category in Settings: the folders searched for games, one group
+// per console. A group's base folders (tico's ROM bases) are listed but not
+// edited here; its own folders are an ordered list edited like Dolphin's game
+// folders: "Add folder", then per folder Change folder, Move up, Move down and
+// Remove (which asks first).
+struct LibraryFolderGroup {
+    std::string label;
+    std::vector<std::string> bases;
+    std::vector<std::string> folders;
+};
 struct LibraryFolderCallbacks {
-    std::function<std::vector<std::string>()> defaults;
-    std::function<std::vector<std::string>()> folders;
-    std::function<void(const std::string& path)> add;
-    std::function<void(const std::string& path)> remove;
+    std::function<std::vector<LibraryFolderGroup>()> groups;
+    // the new ordered folder list of a group
+    std::function<void(int group, const std::vector<std::string>& folders)> set;
 };
 void SetLibraryFolderCallbacks(LibraryFolderCallbacks callbacks);
 

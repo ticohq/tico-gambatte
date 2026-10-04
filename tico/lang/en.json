@@ -37,7 +37,6 @@
     "emulator_vertical": "Vertical",
     "emulator_horizontal_inverted": "Horizontal Inverted",
     "emulator_vertical_inverted": "Vertical Inverted",
-    "emulator_default": "Default",
     "emulator_side_by_side": "Side by Side",
     "emulator_stacked": "Stacked",
     "emulator_single_screen": "Single Screen",
@@ -189,5 +188,11 @@
     "emulator_use_folder": "Use this folder",
     "emulator_no_games": "No games found. Add a folder in Settings > Library",
     "emulator_exit": "Exit",
-    "emulator_load_game_failed": "The game could not be loaded"
+    "emulator_load_game_failed": "The game could not be loaded",
+    "emulator_change_folder": "Change folder",
+    "emulator_move_up": "Move up",
+    "emulator_move_down": "Move down",
+    "emulator_cancel": "Cancel",
+    "emulator_remove_folder_confirm": "Remove this folder? No files will be deleted.",
+    "emulator_folder_exists": "Folder already added"
 }

@@ -52,6 +52,8 @@ enum class MenuScreen {
     ShaderBrowser,
     Library,
     FolderBrowser,
+    FolderActions,
+    FolderConfirm,
 };
 
 enum class QuickItem {
@@ -110,6 +112,10 @@ bool s_library_mode = false;
 std::vector<LibraryEntry> s_library_entries;
 std::string s_folder_dir;
 std::vector<std::string> s_folder_subdirs;
+// the folder being edited: its group, and its index (-1 while adding)
+int s_folder_group = 0;
+int s_folder_index = -1;
+constexpr std::size_t kMaxLibraryFolders = 16;
 std::string s_browse_dir;
 std::vector<ShaderBrowseEntry> s_browse_entries;
 
@@ -365,7 +371,7 @@ std::vector<ExtraCategory> ExtraCategories() {
     if (s_shader_cb.parameters) {
         extra.push_back(ExtraCategory::Shaders);
     }
-    if (s_folder_cb.folders) {
+    if (s_folder_cb.groups) {
         extra.push_back(ExtraCategory::Library);
     }
     return extra;
@@ -406,28 +412,131 @@ MenuScreen RootScreen() {
     return s_library_mode ? MenuScreen::Library : MenuScreen::QuickMenu;
 }
 
-// The Library category: default folders, the user's, then "Add folder".
+// One row of the Library category.
+struct FolderEntry {
+    enum Kind { Heading, Base, Folder, Add } kind;
+    int group;
+    int index;
+};
+
+std::vector<LibraryFolderGroup> FolderGroups() {
+    return s_folder_cb.groups ? s_folder_cb.groups() : std::vector<LibraryFolderGroup>{};
+}
+
+std::vector<FolderEntry> FolderEntries(const std::vector<LibraryFolderGroup>& groups) {
+    std::vector<FolderEntry> entries;
+    for (int g = 0; g < static_cast<int>(groups.size()); ++g) {
+        entries.push_back({FolderEntry::Heading, g, -1});
+        for (int i = 0; i < static_cast<int>(groups[g].bases.size()); ++i) {
+            entries.push_back({FolderEntry::Base, g, i});
+        }
+        entries.push_back({FolderEntry::Add, g, -1});
+        for (int i = 0; i < static_cast<int>(groups[g].folders.size()); ++i) {
+            entries.push_back({FolderEntry::Folder, g, i});
+        }
+    }
+    return entries;
+}
+
+// The Library category: per console, its heading, tico's bases, "Add folder"
+// and its own folders.
 std::vector<MenuRow> BuildFolderRows() {
     std::vector<MenuRow> rows;
-    const std::vector<std::string> defaults =
-        s_folder_cb.defaults ? s_folder_cb.defaults() : std::vector<std::string>{};
-    for (const std::string& path : defaults) {
-        MenuRow row{path};
-        row.value = TrOr("emulator_default", "Default");
-        row.static_value = true;
-        row.dimmed = true;
-        rows.push_back(row);
+    const std::vector<LibraryFolderGroup> groups = FolderGroups();
+    for (const FolderEntry& entry : FolderEntries(groups)) {
+        const LibraryFolderGroup& group = groups[static_cast<std::size_t>(entry.group)];
+        switch (entry.kind) {
+        case FolderEntry::Heading: {
+            MenuRow row{group.label};
+            row.dimmed = true;
+            rows.push_back(row);
+            break;
+        }
+        case FolderEntry::Base: {
+            MenuRow row{group.bases[static_cast<std::size_t>(entry.index)]};
+            row.value = "tico";
+            row.static_value = true;
+            row.dimmed = true;
+            rows.push_back(row);
+            break;
+        }
+        case FolderEntry::Add: {
+            MenuRow row{TrOr("emulator_add_folder", "Add folder")};
+            if (group.folders.size() >= kMaxLibraryFolders) {
+                row.value = "16/16";
+                row.static_value = true;
+                row.dimmed = true;
+            }
+            rows.push_back(row);
+            break;
+        }
+        case FolderEntry::Folder: {
+            MenuRow row{group.folders[static_cast<std::size_t>(entry.index)]};
+            rows.push_back(row);
+            break;
+        }
+        }
     }
-    const std::vector<std::string> folders =
-        s_folder_cb.folders ? s_folder_cb.folders() : std::vector<std::string>{};
-    for (const std::string& path : folders) {
-        MenuRow row{path};
-        row.value = TrOr("emulator_remove", "Remove");
-        row.static_value = true;
-        rows.push_back(row);
-    }
-    rows.push_back({TrOr("emulator_add_folder", "Add folder")});
     return rows;
+}
+
+std::string FolderIdentity(std::string path) {
+    std::replace(path.begin(), path.end(), '\\', '/');
+    if (!path.empty() && path.back() != '/') {
+        path += '/';
+    }
+    std::transform(path.begin(), path.end(), path.begin(),
+                   [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    return path;
+}
+
+// Stores `path` as the folder being added or changed. False for a duplicate.
+bool StoreFolder(const std::string& path) {
+    std::vector<LibraryFolderGroup> groups = FolderGroups();
+    if (s_folder_group < 0 || s_folder_group >= static_cast<int>(groups.size()) || !s_folder_cb.set) {
+        return false;
+    }
+    std::vector<std::string> folders = groups[static_cast<std::size_t>(s_folder_group)].folders;
+    const std::string identity = FolderIdentity(path);
+    for (int i = 0; i < static_cast<int>(folders.size()); ++i) {
+        if (i != s_folder_index && FolderIdentity(folders[static_cast<std::size_t>(i)]) == identity) {
+            return false;
+        }
+    }
+    if (s_folder_index >= 0 && s_folder_index < static_cast<int>(folders.size())) {
+        folders[static_cast<std::size_t>(s_folder_index)] = path;
+    } else if (folders.size() < kMaxLibraryFolders) {
+        folders.push_back(path);
+    }
+    s_folder_cb.set(s_folder_group, folders);
+    return true;
+}
+
+// The row of the Library category showing the edited folder (or "Add folder").
+int FolderRowFor(int group, int index) {
+    const std::vector<FolderEntry> entries = FolderEntries(FolderGroups());
+    for (int i = 0; i < static_cast<int>(entries.size()); ++i) {
+        const FolderEntry& entry = entries[static_cast<std::size_t>(i)];
+        if (entry.group != group) {
+            continue;
+        }
+        if ((index < 0 && entry.kind == FolderEntry::Add) ||
+            (index >= 0 && entry.kind == FolderEntry::Folder && entry.index == index)) {
+            return i;
+        }
+    }
+    return 0;
+}
+
+std::string EditedFolder() {
+    const std::vector<LibraryFolderGroup> groups = FolderGroups();
+    if (s_folder_group < 0 || s_folder_group >= static_cast<int>(groups.size())) {
+        return std::string();
+    }
+    const auto& folders = groups[static_cast<std::size_t>(s_folder_group)].folders;
+    return s_folder_index >= 0 && s_folder_index < static_cast<int>(folders.size())
+               ? folders[static_cast<std::size_t>(s_folder_index)]
+               : std::string();
 }
 
 void OpenFolderBrowser(std::string dir) {
@@ -712,6 +821,21 @@ std::vector<MenuRow> BuildRows() {
         rows.push_back({TrOr("emulator_exit", "Exit")});
         break;
     }
+    case MenuScreen::FolderActions:
+        rows.push_back({TrOr("emulator_change_folder", "Change folder")});
+        rows.push_back({TrOr("emulator_move_up", "Move up")});
+        rows.push_back({TrOr("emulator_move_down", "Move down")});
+        rows.push_back({TrOr("emulator_remove", "Remove")});
+        rows.push_back({TrOr("emulator_back", "Back")});
+        break;
+    case MenuScreen::FolderConfirm: {
+        MenuRow remove{TrOr("emulator_remove", "Remove")};
+        remove.value = EditedFolder();
+        remove.static_value = true;
+        rows.push_back(remove);
+        rows.push_back({TrOr("emulator_cancel", "Cancel")});
+        break;
+    }
     case MenuScreen::FolderBrowser: {
         MenuRow use{TrOr("emulator_use_folder", "Use this folder")};
         use.value = s_folder_dir;
@@ -762,7 +886,14 @@ std::string BuildTitle() {
         title = TrOr("emulator_shader", "Shader");
         break;
     case MenuScreen::FolderBrowser:
-        title = TrOr("emulator_add_folder", "Add folder");
+        title = TrOr(s_folder_index >= 0 ? "emulator_change_folder" : "emulator_add_folder",
+                     s_folder_index >= 0 ? "Change folder" : "Add folder");
+        break;
+    case MenuScreen::FolderActions:
+        title = EditedFolder();
+        break;
+    case MenuScreen::FolderConfirm:
+        title = TrOr("emulator_remove_folder_confirm", "Remove this folder? No files will be deleted.");
         break;
     case MenuScreen::SettingsCategories:
     case MenuScreen::SettingsOptions:
@@ -960,7 +1091,8 @@ void DrawScrollbar(ImDrawList* dl, float x, float top, float height, int first_v
 // keep the selection in view; rows with a value get change arrows when selected.
 void RenderMenu(ImDrawList* dl, ImVec2 display_size, float ease, const std::vector<MenuRow>& rows) {
     const bool wide = s_menu == MenuScreen::Cheats || s_menu == MenuScreen::ShaderBrowser ||
-                      s_menu == MenuScreen::Library || s_menu == MenuScreen::FolderBrowser;
+                      s_menu == MenuScreen::Library || s_menu == MenuScreen::FolderBrowser ||
+                      s_menu == MenuScreen::FolderActions || s_menu == MenuScreen::FolderConfirm;
     const float scale = ImGui::GetIO().FontGlobalScale;
     const float menu_width = kMenuWidth * (wide ? 1.5f : 1.0f) * scale;
     const float item_height = (wide ? 58.0f : 64.0f) * scale;
@@ -1568,12 +1700,16 @@ Action AcceptSelection(const std::vector<MenuRow>& rows) {
     }
     case MenuScreen::FolderBrowser: {
         if (s_selected == 0) {
-            if (s_folder_cb.add) {
-                s_folder_cb.add(s_folder_dir);
+            if (StoreFolder(s_folder_dir)) {
+                RefreshLibrary();
+            } else {
+                ShowToast(TrOr("emulator_folder_exists", "Folder already added"), ToastCorner::TopRight);
             }
-            RefreshLibrary();
+            const int group = s_folder_group;
+            const int index = s_folder_index >= 0 ? s_folder_index
+                                                  : static_cast<int>(FolderGroups()[static_cast<std::size_t>(group)].folders.size()) - 1;
             s_menu = MenuScreen::SettingsOptions;
-            s_selected = 0;
+            s_selected = FolderRowFor(group, index);
         } else if (s_selected == 1) {
             const std::string from = s_folder_dir;
             OpenFolderBrowser(ParentFolder(s_folder_dir));
@@ -1584,6 +1720,69 @@ Action AcceptSelection(const std::vector<MenuRow>& rows) {
             }
         } else {
             OpenFolderBrowser(s_folder_dir + s_folder_subdirs[static_cast<std::size_t>(s_selected - 2)]);
+        }
+        return Action::None;
+    }
+    case MenuScreen::FolderActions: {
+        std::vector<LibraryFolderGroup> groups = FolderGroups();
+        if (s_folder_group >= static_cast<int>(groups.size()) || !s_folder_cb.set) {
+            OpenScreen(MenuScreen::SettingsOptions);
+            return Action::None;
+        }
+        std::vector<std::string> folders = groups[static_cast<std::size_t>(s_folder_group)].folders;
+        if (s_folder_index < 0 || s_folder_index >= static_cast<int>(folders.size())) {
+            OpenScreen(MenuScreen::SettingsOptions);
+            return Action::None;
+        }
+        switch (s_selected) {
+        case 0: // change
+            OpenFolderBrowser(folders[static_cast<std::size_t>(s_folder_index)]);
+            break;
+        case 1: // move up
+            if (s_folder_index > 0) {
+                std::swap(folders[static_cast<std::size_t>(s_folder_index)],
+                          folders[static_cast<std::size_t>(s_folder_index - 1)]);
+                --s_folder_index;
+                s_folder_cb.set(s_folder_group, folders);
+                RefreshLibrary();
+            }
+            break;
+        case 2: // move down
+            if (s_folder_index + 1 < static_cast<int>(folders.size())) {
+                std::swap(folders[static_cast<std::size_t>(s_folder_index)],
+                          folders[static_cast<std::size_t>(s_folder_index + 1)]);
+                ++s_folder_index;
+                s_folder_cb.set(s_folder_group, folders);
+                RefreshLibrary();
+            }
+            break;
+        case 3: // remove, after asking
+            s_menu = MenuScreen::FolderConfirm;
+            s_selected = 1; // the safe choice
+            break;
+        default: // back
+            s_menu = MenuScreen::SettingsOptions;
+            s_selected = FolderRowFor(s_folder_group, s_folder_index);
+            break;
+        }
+        return Action::None;
+    }
+    case MenuScreen::FolderConfirm: {
+        if (s_selected == 0) {
+            std::vector<LibraryFolderGroup> groups = FolderGroups();
+            if (s_folder_group < static_cast<int>(groups.size()) && s_folder_cb.set) {
+                std::vector<std::string> folders = groups[static_cast<std::size_t>(s_folder_group)].folders;
+                if (s_folder_index >= 0 && s_folder_index < static_cast<int>(folders.size())) {
+                    folders.erase(folders.begin() + s_folder_index);
+                    s_folder_cb.set(s_folder_group, folders);
+                    RefreshLibrary();
+                }
+            }
+            s_menu = MenuScreen::SettingsOptions;
+            s_selected = FolderRowFor(s_folder_group, -1);
+        } else {
+            s_menu = MenuScreen::FolderActions;
+            s_selected = 3;
         }
         return Action::None;
     }
@@ -1612,16 +1811,21 @@ Action AcceptSelection(const std::vector<MenuRow>& rows) {
     }
     case MenuScreen::SettingsOptions: {
         if (LibraryCategoryActive()) {
-            const std::size_t default_count =
-                s_folder_cb.defaults ? s_folder_cb.defaults().size() : 0;
-            const std::vector<std::string> folders =
-                s_folder_cb.folders ? s_folder_cb.folders() : std::vector<std::string>{};
-            const int index = s_selected - static_cast<int>(default_count);
-            if (s_selected == static_cast<int>(rows.size()) - 1) {
+            const std::vector<LibraryFolderGroup> groups = FolderGroups();
+            const std::vector<FolderEntry> entries = FolderEntries(groups);
+            if (s_selected < 0 || s_selected >= static_cast<int>(entries.size())) {
+                return Action::None;
+            }
+            const FolderEntry entry = entries[static_cast<std::size_t>(s_selected)];
+            s_folder_group = entry.group;
+            if (entry.kind == FolderEntry::Add &&
+                groups[static_cast<std::size_t>(entry.group)].folders.size() < kMaxLibraryFolders) {
+                s_folder_index = -1;
                 OpenFolderBrowser("sdmc:/");
-            } else if (index >= 0 && index < static_cast<int>(folders.size()) && s_folder_cb.remove) {
-                s_folder_cb.remove(folders[static_cast<std::size_t>(index)]);
-                RefreshLibrary();
+            } else if (entry.kind == FolderEntry::Folder) {
+                s_folder_index = entry.index;
+                s_menu = MenuScreen::FolderActions;
+                s_selected = 0;
             }
             return Action::None;
         }
@@ -1663,8 +1867,21 @@ Action CancelScreen() {
         // the library is the root while no game runs; Exit leaves it
         break;
     case MenuScreen::FolderBrowser:
+        if (s_folder_index >= 0) {
+            s_menu = MenuScreen::FolderActions;
+            s_selected = 0;
+        } else {
+            s_menu = MenuScreen::SettingsOptions;
+            s_selected = FolderRowFor(s_folder_group, -1);
+        }
+        break;
+    case MenuScreen::FolderActions:
         s_menu = MenuScreen::SettingsOptions;
-        s_selected = static_cast<int>(BuildFolderRows().size()) - 1;
+        s_selected = FolderRowFor(s_folder_group, s_folder_index);
+        break;
+    case MenuScreen::FolderConfirm:
+        s_menu = MenuScreen::FolderActions;
+        s_selected = 3;
         break;
     case MenuScreen::SettingsOptions:
         s_menu = MenuScreen::SettingsCategories;

@@ -37,7 +37,6 @@
     "emulator_vertical": "Vertical",
     "emulator_horizontal_inverted": "Horizontal Invertido",
     "emulator_vertical_inverted": "Vertical Invertido",
-    "emulator_default": "Padrão",
     "emulator_side_by_side": "Lado a Lado",
     "emulator_stacked": "Empilhado",
     "emulator_single_screen": "Tela Única",
@@ -625,5 +624,11 @@
     "emulator_use_folder": "Usar esta pasta",
     "emulator_no_games": "Nenhum jogo encontrado. Adicione uma pasta em Configurações > Biblioteca",
     "emulator_exit": "Sair",
-    "emulator_load_game_failed": "Não foi possível carregar o jogo"
+    "emulator_load_game_failed": "Não foi possível carregar o jogo",
+    "emulator_change_folder": "Trocar pasta",
+    "emulator_move_up": "Mover para cima",
+    "emulator_move_down": "Mover para baixo",
+    "emulator_cancel": "Cancelar",
+    "emulator_remove_folder_confirm": "Remover esta pasta? Nenhum arquivo será apagado.",
+    "emulator_folder_exists": "Pasta já adicionada"
 }

@@ -24,7 +24,6 @@
     "emulator_vertical": "Вертикально",
     "emulator_horizontal_inverted": "Горизонтально перевернуто",
     "emulator_vertical_inverted": "Вертикально перевернуто",
-    "emulator_default": "По умолчанию",
     "emulator_side_by_side": "Рядом",
     "emulator_stacked": "Друг над другом",
     "emulator_single_screen": "Один экран",
@@ -233,5 +232,11 @@
     "emulator_use_folder": "Использовать эту папку",
     "emulator_no_games": "Игры не найдены. Добавьте папку в Настройки > Библиотека",
     "emulator_exit": "Выход",
-    "emulator_load_game_failed": "Не удалось загрузить игру"
+    "emulator_load_game_failed": "Не удалось загрузить игру",
+    "emulator_change_folder": "Изменить папку",
+    "emulator_move_up": "Вверх",
+    "emulator_move_down": "Вниз",
+    "emulator_cancel": "Отмена",
+    "emulator_remove_folder_confirm": "Убрать эту папку? Файлы не будут удалены.",
+    "emulator_folder_exists": "Папка уже добавлена"
 }
