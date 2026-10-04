@@ -15,7 +15,9 @@
       "extensions": [
         ".gb",
         ".gbc",
-        ".zip"
+        ".zip",
+        ".7z",
+        ".rar"
       ],
       "games_file": "gb.json",
       "retroachievements_id": 4,
@@ -33,7 +35,9 @@
       "extensions": [
         ".gb",
         ".gbc",
-        ".zip"
+        ".zip",
+        ".7z",
+        ".rar"
       ],
       "games_file": "gbc.json",
       "retroachievements_id": 6,

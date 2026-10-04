@@ -1119,7 +1119,7 @@ static bool FastForwardUncapped()
 // Library (standalone launch)
 //==============================================================================
 
-static const char *kRomExtensions[] = {".gb", ".gbc", ".dmg", ".zip"};
+static const char *kRomExtensions[] = {".gb", ".gbc", ".dmg", ".zip", ".7z", ".rar"};
 
 static std::string LowerExtension(const std::string &path)
 {

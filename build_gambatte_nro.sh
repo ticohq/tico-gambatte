@@ -85,7 +85,7 @@ CXX="${DEVKITA64}/bin/aarch64-none-elf-g++"
 
 COMMON_FLAGS="-march=armv8-a+crc+crypto -mtune=cortex-a57 -mtp=soft -fPIE -O2 -g"
 COMMON_FLAGS="$COMMON_FLAGS -ffunction-sections -fdata-sections -DDISABLE_LOGGING -D__SWITCH__ -DHAVE_LIBNX"
-COMMON_FLAGS="$COMMON_FLAGS -DVK_USE_PLATFORM_VI_NN -DTICO_APP_VERSION=\"$APP_VERSION\""
+COMMON_FLAGS="$COMMON_FLAGS -DLIBARCHIVE_STATIC -DVK_USE_PLATFORM_VI_NN -DTICO_APP_VERSION=\"$APP_VERSION\""
 COMMON_FLAGS="$COMMON_FLAGS -I$LIBNX/include -I$PORTLIBS/include -I$PORTLIBS/include/SDL2"
 COMMON_FLAGS="$COMMON_FLAGS -I$TICO_DIR -I$TICO_DIR/deps"
 COMMON_FLAGS="$COMMON_FLAGS -I$TICO_DIR/deps/vulkan-headers"
@@ -209,7 +209,7 @@ NVK_ARCHIVE="$BUILD_DIR/libvulkan.a"
 cp "$NVK_ARCHIVE_SRC" "$NVK_ARCHIVE"
 "$DEVKITA64/bin/aarch64-none-elf-ranlib" "$NVK_ARCHIVE"
 
-LINK_LIBS="$LINK_LIBS -lcurl -lmbedtls -lmbedx509 -lmbedcrypto -lminizip -lz -lzstd"
+LINK_LIBS="$LINK_LIBS -lcurl -lmbedtls -lmbedx509 -lmbedcrypto -larchive -lbz2 -llzma -llz4 -lz -lzstd"
 LINK_LIBS="$LINK_LIBS -lnx -lm -lstdc++ -lpthread"
 
 $CXX $LINK_FLAGS \
