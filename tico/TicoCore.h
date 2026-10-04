@@ -126,6 +126,11 @@ public:
     void SaveState(const std::string &path);
     void LoadState(const std::string &path);
 
+    /// @brief Core options. LoadConfig reads gambatte.jsonc (once); SetOption
+    /// changes a libretro variable, which the core re-reads next frame.
+    void EnsureConfigLoaded() { LoadConfig(); }
+    void SetOption(const std::string &key, const std::string &value);
+
     /// @brief Set EGL contexts for HW rendering
     void SetHWRenderContext(SDL_Window *window, EGLContext mainCtx, EGLContext hwCtx);
 

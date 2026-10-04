@@ -9,22 +9,26 @@ namespace TicoConfig {
 
     constexpr const char* FONT_PATH = "romfs:/fonts/font.ttf";
 
-    // System path is shared for both GB and GBC
-    inline std::string SYSTEM_PATH = "sdmc:/tico/system/gb/";
-
-    // Saves and states are per-slug (gb or gbc)
-    inline std::string SAVES_PATH = "sdmc:/tico/saves/gbc/";
-    inline std::string STATES_PATH = "sdmc:/tico/states/gbc/";
-
-    // Current console slug (set from argv)
+    // Current console slug (gb or gbc, from argv[1])
     inline std::string CURRENT_SLUG = "gbc";
 
-    /// @brief Set paths based on console slug (gb, gbc)
+    /// @brief Set the console being booted (gb, gbc)
     inline void SetSlug(const std::string& slug) {
-        CURRENT_SLUG = slug;
-        SAVES_PATH = "sdmc:/tico/saves/" + slug + "/";
-        STATES_PATH = "sdmc:/tico/states/" + slug + "/";
+        if (!slug.empty())
+            CURRENT_SLUG = slug;
     }
+
+    /// Content directories, with a trailing slash. Tico's per-module Paths tab
+    /// stores custom roots as tico_{system,saves,states}_path in gambatte.jsonc;
+    /// empty or missing keys fall back to sdmc:/tico/<kind>/. Saves and states
+    /// append the console slug like tico's {saves}/{states}; BIOS files live
+    /// in the module's shared system_dir, <system root>/gambatte/.
+    std::string SystemPath();
+    std::string SavesPath();
+    std::string StatesPath();
+
+    /// Create a directory and any missing parents.
+    void MakeDirs(const std::string& path);
 
     /// @brief Map console slug to RetroAchievements console ID
     inline int GetRcConsoleId() {
