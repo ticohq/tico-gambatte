@@ -24,6 +24,7 @@
 
 // RetroAchievements
 #include "rc_client.h"
+#include "rc_consoles.h"
 #include <curl/curl.h>
 #include <sys/stat.h>
 #include <sys/types.h>
@@ -1760,15 +1761,10 @@ void TicoCore::SaveRAToken(const std::string& token)
 
 void TicoCore::RAIdentifyGame(rc_client_t* c, TicoCore* core)
 {
-    uint32_t console_id = 4; // Default to Game Boy Color
-    size_t dot_pos = core->m_gamePath.find_last_of('.');
-    if (dot_pos != std::string::npos) {
-        std::string ext = core->m_gamePath.substr(dot_pos);
-        std::transform(ext.begin(), ext.end(), ext.begin(), ::tolower);
-        if (ext == ".gb") {
-            console_id = 3; // Game Boy
-        }
-    }
+    // The cartridge header names the console: the CGB flag at 0x143 marks a
+    // Game Boy Color game, which also covers zipped ROMs and .gb/.gbc mixups.
+    const bool color = core->m_romData.size() > 0x143 && (core->m_romData[0x143] & 0x80);
+    const uint32_t console_id = color ? RC_CONSOLE_GAMEBOY_COLOR : RC_CONSOLE_GAMEBOY;
 
     tico_debug_log("RA: Identifying game... (Console ID: %u)", console_id);
     // hashed from the loaded ROM, so a zipped game is recognized too

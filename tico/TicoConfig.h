@@ -30,12 +30,6 @@ namespace TicoConfig {
     /// Create a directory and any missing parents.
     void MakeDirs(const std::string& path);
 
-    /// @brief Map console slug to RetroAchievements console ID
-    inline int GetRcConsoleId() {
-        if (CURRENT_SLUG == "gb") return 4;   // RC_CONSOLE_GAMEBOY
-        return 5; // RC_CONSOLE_GAMEBOY_COLOR (default)
-    }
-
     constexpr int WINDOW_WIDTH = 1280;
     constexpr int WINDOW_HEIGHT = 720;
     constexpr float FONT_SIZE = 32.0f;
