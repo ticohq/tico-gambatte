@@ -104,6 +104,18 @@ public:
     /// @brief Get current game path
     std::string GetGamePath() const { return m_gamePath; }
 
+    /// @brief Cheats for the game, from sdmc:/tico/cheats/<slug>/<game>.cht
+    /// (RetroArch's format, as in libretro's cheat database) or .cheats
+    /// ("# Name" then its codes). Game Genie (ABC-DEF-GHI) and GameShark
+    /// (01VVAAAA) codes. Every cheat starts off; toggles last the session.
+    struct Cheat {
+        std::string name;
+        std::vector<std::string> codes;
+        bool enabled = false;
+    };
+    const std::vector<Cheat> &GetCheats() const { return m_cheats; }
+    void ToggleCheat(size_t index);
+
     /// @brief Save states
     /// The state goes to `path`, rc_client's achievement progress beside it
     /// (`path` + ".ra"). Loading is refused while hardcore is active.
@@ -151,6 +163,9 @@ private:
 
     void LoadSaveData();
     void SaveSaveData();
+    void LoadCheats();
+    void ApplyCheats();
+    std::vector<Cheat> m_cheats;
     void LoadRtcData();
     void SaveRtcData();
 

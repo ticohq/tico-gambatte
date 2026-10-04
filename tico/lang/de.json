@@ -15,7 +15,7 @@
     "emulator_toggle": "Umschalten",
     "emulator_back": "Zurück",
     "emulator_select": "Auswählen",
-    "emulator_no_cheats": "Keine Cheats",
+    "emulator_no_cheats": "Keine Cheats in sdmc:/tico/cheats/",
     "emulator_rewind": "Rewind",
     "emulator_no_rewind_points": "Nothing to rewind to yet",
     "emulator_seconds_ago": "%d seconds ago",
@@ -307,5 +307,11 @@
     "settings_gambatte_value_unlimited": "Unbegrenzt",
     "settings_gambatte_value_up": "Oben",
     "emulator_sd_card": "SD-Karte",
-    "emulator_no_preview": "Keine Vorschau"
+    "emulator_no_preview": "Keine Vorschau",
+    "emulator_restart": "Neu starten",
+    "emulator_restart_confirm": "Spiel neu starten? Fortschritt seit dem letzten Speichern geht verloren.",
+    "emulator_exit_confirm": "Spiel beenden? Fortschritt seit dem letzten Speichern geht verloren.",
+    "emulator_reset_confirm": "Spiel zurücksetzen? Fortschritt seit dem letzten Speichern geht verloren.",
+    "emulator_reset_hint": "Wie die Reset-Taste der Konsole: Das Spiel beginnt neu, ohne geschlossen zu werden.",
+    "emulator_restart_hint": "Schließt das Spiel und öffnet es erneut, als würdest du es wieder aus tico starten."
 }

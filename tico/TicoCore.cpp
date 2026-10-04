@@ -8,6 +8,7 @@
 #include <archive.h>
 #include <archive_entry.h>
 #include "TicoConfig.h"
+#include "TicoUtils.h"
 #include <algorithm>
 #include <json.hpp>
 #include <SDL.h>
@@ -957,6 +958,7 @@ bool TicoCore::LoadGame(const std::string &path)
     // Load native save data, falling back to legacy .srm saves when needed.
     LoadSaveData();
     LoadRtcData();
+    LoadCheats();
 
     return true;
 }
@@ -1015,6 +1017,135 @@ void TicoCore::Reset()
         if (m_rcClient)
             rc_client_reset(m_rcClient);
     }
+}
+
+//==============================================================================
+// Cheats
+//==============================================================================
+extern "C" {
+void retro_cheat_reset(void);
+void retro_cheat_set(unsigned index, bool enabled, const char *code);
+}
+
+static std::string CheatsBase(const std::string &gamePath)
+{
+    std::string name = gamePath;
+    const size_t slash = name.find_last_of("/\\");
+    if (slash != std::string::npos)
+        name = name.substr(slash + 1);
+    const size_t dot = name.find_last_of('.');
+    if (dot != std::string::npos)
+        name = name.substr(0, dot);
+    const std::string dir = "sdmc:/tico/cheats/" + TicoConfig::CURRENT_SLUG + "/";
+    TicoConfig::MakeDirs(dir);
+    return dir + name;
+}
+
+// One cheat's codes: Game Genie and GameShark codes joined with + or ;
+static void SplitCodes(const std::string &text, std::vector<std::string> &out)
+{
+    std::string code;
+    for (const char c : text + ";")
+    {
+        if (c == '+' || c == ';' || c == ',')
+        {
+            code = TicoUtils::Trim(code);
+            if (!code.empty())
+                out.push_back(code);
+            code.clear();
+        }
+        else
+            code += c;
+    }
+}
+
+void TicoCore::LoadCheats()
+{
+    m_cheats.clear();
+    const std::string base = CheatsBase(m_gamePath);
+
+    // RetroArch .cht: cheatN_desc / cheatN_code (enable flags are ignored:
+    // every cheat starts off)
+    std::ifstream cht(base + ".cht");
+    if (cht.is_open())
+    {
+        std::map<int, Cheat> byIndex;
+        std::string line;
+        while (std::getline(cht, line))
+        {
+            const size_t eq = line.find('=');
+            if (eq == std::string::npos)
+                continue;
+            const std::string key = TicoUtils::Trim(line.substr(0, eq));
+            std::string value = TicoUtils::Trim(line.substr(eq + 1));
+            if (value.size() >= 2 && value.front() == '"' && value.back() == '"')
+                value = value.substr(1, value.size() - 2);
+            int index = -1;
+            char field[16] = {0};
+            if (sscanf(key.c_str(), "cheat%d_%15s", &index, field) != 2 || index < 0)
+                continue;
+            if (!strcmp(field, "desc"))
+                byIndex[index].name = value;
+            else if (!strcmp(field, "code"))
+                SplitCodes(value, byIndex[index].codes);
+        }
+        for (auto &entry : byIndex)
+        {
+            if (entry.second.codes.empty())
+                continue;
+            if (entry.second.name.empty())
+                entry.second.name = "Cheat " + std::to_string(entry.first + 1);
+            m_cheats.push_back(entry.second);
+        }
+    }
+
+    // .cheats: "# Name", then one code (or several joined with +) per line
+    std::ifstream simple(base + ".cheats");
+    if (simple.is_open())
+    {
+        std::string line;
+        while (std::getline(simple, line))
+        {
+            const std::string text = TicoUtils::Trim(line);
+            if (text.empty() || text[0] == '!')
+                continue;
+            if (text[0] == '#')
+            {
+                m_cheats.push_back(Cheat());
+                m_cheats.back().name = TicoUtils::Trim(text.substr(1));
+                continue;
+            }
+            if (m_cheats.empty())
+            {
+                m_cheats.push_back(Cheat());
+                m_cheats.back().name = "Cheat";
+            }
+            SplitCodes(text, m_cheats.back().codes);
+        }
+    }
+    tico_debug_log("CHEATS: %zu for %s", m_cheats.size(), base.c_str());
+}
+
+// Every code goes in on its own: the core picks Game Genie or GameShark per
+// entry (by the dashes), so a cheat mixing both stays correct.
+void TicoCore::ApplyCheats()
+{
+    if (!m_gameLoaded)
+        return;
+    retro_cheat_reset(); // also restores what Game Genie codes patched
+    unsigned index = 0;
+    for (const Cheat &cheat : m_cheats)
+        if (cheat.enabled)
+            for (const std::string &code : cheat.codes)
+                retro_cheat_set(index++, true, code.c_str());
+}
+
+void TicoCore::ToggleCheat(size_t index)
+{
+    if (index >= m_cheats.size() || IsHardcoreActive())
+        return;
+    m_cheats[index].enabled = !m_cheats[index].enabled;
+    ApplyCheats();
 }
 
 bool TicoCore::IsHardcoreActive() const

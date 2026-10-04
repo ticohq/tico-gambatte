@@ -27,7 +27,7 @@
 namespace SwitchFrontend::OverlayUI {
 
 namespace {
-constexpr int kOverlaySlotCount = 4;
+constexpr int kOverlaySlotCount = 6;
 constexpr int kToastSlotCount = 4;
 // rows shown at once before a list starts scrolling
 constexpr int kMaxVisibleRows = 8;
@@ -56,6 +56,8 @@ enum class MenuScreen {
     FolderBrowser,
     FolderActions,
     FolderConfirm,
+    // Yes/Cancel before Restart or Exit Game
+    GameConfirm,
 };
 
 enum class QuickItem {
@@ -66,8 +68,22 @@ enum class QuickItem {
     Cheats,
     Settings,
     Reset,
+    Restart,
     Exit,
 };
+
+// What GameConfirm asks about: QuickItem::Reset, Restart or Exit.
+QuickItem s_confirm_item = QuickItem::Exit;
+
+// The quick menu's sidebar, left of the list: Settings, Restart, Exit Game.
+// Left moves focus onto it and right back to the list, as in tico's own menu.
+constexpr QuickItem kSidebarItems[] = {QuickItem::Settings, QuickItem::Restart, QuickItem::Exit};
+constexpr int kSidebarCount = 3;
+bool s_side_focus = false;
+int s_side_selected = 0;
+// where GameConfirm returns to on Cancel
+bool s_confirm_from_side = false;
+std::array<unsigned long long, kSidebarCount> s_side_icons{};
 
 // One line of whatever list is on screen. Every menu is drawn from these, so
 // they all share scrolling, selection and layout.
@@ -153,6 +169,7 @@ enum class HitKind {
     Back,        // helpers bar
     Accept,
     Panel,       // the menu's background: taps there do nothing
+    SideItem,    // the quick menu's sidebar icons
 };
 struct HitRegion {
     ImVec2 min;
@@ -186,6 +203,22 @@ float EaseOutCubic(float t) {
 std::string TrOr(const char* key, const char* fallback) {
     const std::string translated = OverlayTranslation::tr(key);
     return translated == key ? std::string(fallback) : translated;
+}
+
+// tico's light or dark theme, read each time the menu opens. The panels and
+// what is drawn on them follow it; what sits on the dimmed game (title card,
+// helpers bar, status bar, toasts) stays light on dark in both, as in tico.
+bool s_dark = false;
+
+ImU32 Themed(int dr, int dg, int db, int lr, int lg, int lb, int a) {
+    return s_dark ? IM_COL32(dr, dg, db, a) : IM_COL32(lr, lg, lb, a);
+}
+ImU32 PanelColor(int a) { return Themed(45, 45, 45, 242, 245, 248, a); }
+ImU32 PanelShadeColor(int a) { return Themed(34, 34, 34, 228, 232, 237, a); }
+// a row's label and value: dimmed, normal or selected
+ImU32 RowTextColor(bool dimmed, bool selected, int a) {
+    if (dimmed) return Themed(150, 150, 150, 150, 150, 160, a);
+    return selected ? Themed(255, 255, 255, 60, 60, 70, a) : Themed(200, 200, 200, 90, 90, 100, a);
 }
 
 void DrawTextWithShadow(ImDrawList* dl, ImFont* font, float font_size, ImVec2 pos, ImU32 color,
@@ -231,8 +264,8 @@ void DrawCheckBox(ImDrawList* dl, ImVec2 center, float size, bool checked, float
     const float half = size * 0.5f;
     const ImVec2 p0(center.x - half, center.y - half);
     const ImVec2 p1(center.x + half, center.y + half);
-    const ImU32 border = IM_COL32(220, 220, 220, static_cast<int>(220.0f * alpha));
-    const ImU32 fill = IM_COL32(235, 235, 235, static_cast<int>(checked ? 220.0f * alpha : 0.0f));
+    const ImU32 border = Themed(220, 220, 220, 90, 90, 100, static_cast<int>(220.0f * alpha));
+    const ImU32 fill = Themed(235, 235, 235, 60, 60, 70, static_cast<int>(checked ? 220.0f * alpha : 0.0f));
     dl->AddRect(p0, p1, border, 4.0f, 0, 2.0f);
     if (!checked) {
         return;
@@ -240,7 +273,7 @@ void DrawCheckBox(ImDrawList* dl, ImVec2 center, float size, bool checked, float
 
     dl->AddRectFilled(ImVec2(p0.x + 3.0f, p0.y + 3.0f), ImVec2(p1.x - 3.0f, p1.y - 3.0f), fill,
                       3.0f);
-    const ImU32 mark = IM_COL32(45, 45, 45, static_cast<int>(255.0f * alpha));
+    const ImU32 mark = PanelColor(static_cast<int>(255.0f * alpha));
     dl->PathLineTo(ImVec2(p0.x + (size * 0.25f), center.y));
     dl->PathLineTo(ImVec2(p0.x + (size * 0.44f), p0.y + (size * 0.68f)));
     dl->PathLineTo(ImVec2(p0.x + (size * 0.76f), p0.y + (size * 0.32f)));
@@ -333,7 +366,7 @@ void DrawAnimatedGradientBorder(ImDrawList* dl, ImVec2 min, ImVec2 max, float co
 void DrawSelection(ImDrawList* dl, ImVec2 min, ImVec2 max, float corner_radius, float alpha) {
     const float scale = ImGui::GetIO().FontGlobalScale;
     if (s_border_texture_id == 0) {
-        dl->AddRectFilled(min, max, IM_COL32(60, 60, 60, static_cast<int>(255.0f * alpha)),
+        dl->AddRectFilled(min, max, Themed(60, 60, 60, 220, 224, 230, static_cast<int>(255.0f * alpha)),
                           corner_radius);
         return;
     }
@@ -376,9 +409,7 @@ std::vector<QuickItem> BuildQuickItems() {
     if (!s_hardcore && s_cheat_list_cb) {
         items.push_back(QuickItem::Cheats);
     }
-    items.push_back(QuickItem::Settings);
     items.push_back(QuickItem::Reset);
-    items.push_back(QuickItem::Exit);
     return items;
 }
 
@@ -398,6 +429,8 @@ std::string QuickItemLabel(QuickItem item) {
         return TrOr("emulator_settings", "Settings");
     case QuickItem::Reset:
         return TrOr("emulator_reset", "Reset");
+    case QuickItem::Restart:
+        return TrOr("emulator_restart", "Restart");
     case QuickItem::Exit:
     default:
         return TrOr("emulator_exit_game", "Exit Game");
@@ -899,6 +932,10 @@ std::vector<MenuRow> BuildRows() {
         rows.push_back({TrOr("emulator_remove", "Remove")});
         rows.push_back({TrOr("emulator_back", "Back")});
         break;
+    case MenuScreen::GameConfirm:
+        rows.push_back({QuickItemLabel(s_confirm_item)});
+        rows.push_back({TrOr("emulator_cancel", "Cancel")});
+        break;
     case MenuScreen::FolderConfirm: {
         MenuRow remove{TrOr("emulator_remove", "Remove")};
         remove.value = UsbStorage::DisplayName(EditedFolder());
@@ -971,6 +1008,16 @@ std::string BuildTitle() {
         break;
     case MenuScreen::FolderConfirm:
         title = TrOr("emulator_remove_folder_confirm", "Remove this folder? No files will be deleted.");
+        break;
+    case MenuScreen::GameConfirm:
+        title = s_confirm_item == QuickItem::Restart
+                    ? TrOr("emulator_restart_confirm",
+                           "Restart the game? Progress since your last save will be lost.")
+                : s_confirm_item == QuickItem::Reset
+                    ? TrOr("emulator_reset_confirm",
+                           "Reset the game? Progress since your last save will be lost.")
+                    : TrOr("emulator_exit_confirm",
+                           "Exit the game? Progress since your last save will be lost.");
         break;
     case MenuScreen::SettingsCategories:
     case MenuScreen::SettingsOptions:
@@ -1106,8 +1153,7 @@ void DrawRowContent(ImDrawList* dl, const MenuRow& row, ImVec2 item_min, ImVec2 
     ImFont* font = ImGui::GetFont();
     const int alpha = static_cast<int>(255.0f * ease);
     const float item_height = item_max.y - item_min.y;
-    const int shade = row.dimmed ? 150 : (selected ? 255 : 200);
-    const ImU32 text_color = IM_COL32(shade, shade, shade, alpha);
+    const ImU32 text_color = RowTextColor(row.dimmed, selected, alpha);
     const float text_x = item_min.x + (20.0f * scale);
     const float right_edge = item_max.x - (28.0f * scale);
 
@@ -1168,15 +1214,111 @@ void DrawScrollbar(ImDrawList* dl, float x, float top, float height, int first_v
     const float thumb_y = top + (height - thumb_height) * static_cast<float>(first_visible) /
                                     static_cast<float>(item_count - visible_count);
     dl->AddRectFilled(ImVec2(x, thumb_y), ImVec2(x + (3.0f * scale), thumb_y + thumb_height),
-                      IM_COL32(200, 200, 200, static_cast<int>(120.0f * ease)), 2.0f);
+                      Themed(200, 200, 200, 90, 90, 100, static_cast<int>(120.0f * ease)), 2.0f);
 }
 
 // Draws the current screen's rows. Lists longer than kMaxVisibleRows scroll to
 // keep the selection in view; rows with a value get change arrows when selected.
+// A tooltip beside an item: its name and, when given, a line explaining it.
+// The arrow points at the item, which is to the right of the tooltip when
+// left_of is set and to its left otherwise.
+void DrawTooltip(ImDrawList* dl, float anchor_x, float center_y, bool left_of,
+                 const std::string& title, const std::string& hint, int alpha) {
+    const float scale = ImGui::GetIO().FontGlobalScale;
+    ImFont* font = ImGui::GetFont();
+    const float title_size = ImGui::GetFontSize() * 0.6f;
+    const float hint_size = ImGui::GetFontSize() * 0.5f;
+    const float pad_x = 12.0f * scale;
+    const float pad_y = 8.0f * scale;
+    const float wrap = 300.0f * scale;
+    const ImVec2 title_text = font->CalcTextSizeA(title_size, FLT_MAX, 0.0f, title.c_str());
+    const ImVec2 hint_text = hint.empty() ? ImVec2(0.0f, 0.0f)
+                                          : font->CalcTextSizeA(hint_size, FLT_MAX, wrap, hint.c_str());
+    const float gap = hint.empty() ? 0.0f : 4.0f * scale;
+    const float w = std::max(title_text.x, hint_text.x) + (2.0f * pad_x);
+    const float h = title_text.y + gap + hint_text.y + (2.0f * pad_y);
+    const float arrow = 6.0f * scale;
+    const float x0 = left_of ? std::max(8.0f * scale, anchor_x - arrow - w) : anchor_x + arrow;
+    const ImVec2 tip_min(x0, center_y - (h * 0.5f));
+    const ImVec2 tip_max(x0 + w, center_y + (h * 0.5f));
+    const ImU32 bg = Themed(36, 36, 36, 250, 252, 255, alpha);
+    dl->AddRectFilled(tip_min, tip_max, bg, 8.0f * scale);
+    if (left_of) {
+        dl->AddTriangleFilled(ImVec2(tip_max.x, center_y - (5.0f * scale)),
+                              ImVec2(tip_max.x, center_y + (5.0f * scale)),
+                              ImVec2(tip_max.x + arrow, center_y), bg);
+    } else {
+        dl->AddTriangleFilled(ImVec2(tip_min.x, center_y - (5.0f * scale)),
+                              ImVec2(tip_min.x, center_y + (5.0f * scale)),
+                              ImVec2(tip_min.x - arrow, center_y), bg);
+    }
+    dl->AddText(font, title_size, ImVec2(tip_min.x + pad_x, tip_min.y + pad_y),
+                Themed(255, 255, 255, 60, 60, 70, alpha), title.c_str());
+    if (!hint.empty()) {
+        dl->AddText(font, hint_size,
+                    ImVec2(tip_min.x + pad_x, tip_min.y + pad_y + title_text.y + gap),
+                    Themed(190, 190, 190, 100, 100, 110, alpha), hint.c_str(), nullptr, wrap);
+    }
+}
+
+// What Reset and Restart do, shown beside them, since the two are easy to mix up.
+std::string QuickItemHint(QuickItem item) {
+    switch (item) {
+    case QuickItem::Reset:
+        return TrOr("emulator_reset_hint",
+                    "Like pressing the console's reset button: the game starts over without closing.");
+    case QuickItem::Restart:
+        return TrOr("emulator_restart_hint",
+                    "Closes and reopens the game, as if you launched it again from tico.");
+    default:
+        return std::string();
+    }
+}
+
+// The quick menu's icon rail, left of the list and centred on it: Settings,
+// Restart and Exit Game, the focused one with its name beside it.
+void RenderSidebar(ImDrawList* dl, ImVec2 menu_pos, ImVec2 menu_size, float item_height, float ease) {
+    const float scale = ImGui::GetIO().FontGlobalScale;
+    const float width = 76.0f * scale;
+    const float gap = 12.0f * scale;
+    const float corner_radius = 16.0f * scale;
+    const int alpha = static_cast<int>(255.0f * ease);
+    const float rail_h = item_height * kSidebarCount;
+    const ImVec2 rail_min(std::max(24.0f * scale, menu_pos.x - gap - width),
+                          menu_pos.y + ((menu_size.y - rail_h) * 0.5f));
+    const ImVec2 rail_max(rail_min.x + width, rail_min.y + rail_h);
+    dl->AddRectFilled(rail_min, rail_max, PanelColor(alpha), corner_radius);
+    AddHit(rail_min, rail_max, HitKind::Panel);
+
+    const float icon_size = 28.0f * scale;
+    for (int i = 0; i < kSidebarCount; ++i) {
+        const ImVec2 item_min(rail_min.x, rail_min.y + (static_cast<float>(i) * item_height));
+        const ImVec2 item_max(rail_max.x, item_min.y + item_height);
+        const bool selected = s_side_focus && s_side_selected == i;
+        AddHit(item_min, item_max, HitKind::SideItem, i);
+        if (selected) {
+            DrawSelection(dl, item_min, item_max, corner_radius, ease);
+        }
+        const ImVec2 center((item_min.x + item_max.x) * 0.5f, (item_min.y + item_max.y) * 0.5f);
+        if (s_side_icons[static_cast<std::size_t>(i)]) {
+            dl->AddImage(ImTextureRef(static_cast<ImTextureID>(s_side_icons[static_cast<std::size_t>(i)])),
+                         ImVec2(center.x - (icon_size * 0.5f), center.y - (icon_size * 0.5f)),
+                         ImVec2(center.x + (icon_size * 0.5f), center.y + (icon_size * 0.5f)),
+                         ImVec2(0.0f, 0.0f), ImVec2(1.0f, 1.0f), RowTextColor(false, selected, alpha));
+        }
+        if (selected) {
+            // the item's name (and what it does) in a tooltip left of the rail
+            DrawTooltip(dl, item_min.x - (4.0f * scale), center.y, true,
+                        QuickItemLabel(kSidebarItems[i]), QuickItemHint(kSidebarItems[i]), alpha);
+        }
+    }
+}
+
 void RenderMenu(ImDrawList* dl, ImVec2 display_size, float ease, const std::vector<MenuRow>& rows) {
     const bool wide = s_menu == MenuScreen::Cheats || s_menu == MenuScreen::ShaderBrowser ||
                       s_menu == MenuScreen::Library || s_menu == MenuScreen::FolderBrowser ||
-                      s_menu == MenuScreen::FolderActions || s_menu == MenuScreen::FolderConfirm;
+                      s_menu == MenuScreen::FolderActions || s_menu == MenuScreen::FolderConfirm ||
+                      s_menu == MenuScreen::GameConfirm;
     const float scale = ImGui::GetIO().FontGlobalScale;
     const float menu_width = kMenuWidth * (wide ? 1.5f : 1.0f) * scale;
     const float item_height = (wide ? 58.0f : 64.0f) * scale;
@@ -1191,14 +1333,18 @@ void RenderMenu(ImDrawList* dl, ImVec2 display_size, float ease, const std::vect
     const int alpha = static_cast<int>(255.0f * ease);
 
     dl->AddRectFilled(menu_pos, ImVec2(menu_pos.x + menu_size.x, menu_pos.y + menu_size.y),
-                      IM_COL32(45, 45, 45, alpha), corner_radius);
+                      PanelColor(alpha), corner_radius);
     AddHit(menu_pos, ImVec2(menu_pos.x + menu_size.x, menu_pos.y + menu_size.y), HitKind::Panel);
 
     const float label_size = ImGui::GetFontSize() * (wide ? 0.82f : 0.85f);
     const int first_visible = FirstVisibleRow(s_selected, item_count, visible_count);
+    const bool quick = s_menu == MenuScreen::QuickMenu;
+    if (quick) {
+        RenderSidebar(dl, menu_pos, menu_size, item_height, ease);
+    }
     for (int row_index = 0; row_index < visible_count; ++row_index) {
         const int i = first_visible + row_index;
-        const bool selected = s_selected == i;
+        const bool selected = s_selected == i && !(quick && s_side_focus);
         const float item_y = menu_pos.y + (static_cast<float>(row_index) * item_height);
         const ImVec2 item_min(menu_pos.x, item_y);
         const ImVec2 item_max(menu_pos.x + menu_size.x, item_y + item_height);
@@ -1208,6 +1354,16 @@ void RenderMenu(ImDrawList* dl, ImVec2 display_size, float ease, const std::vect
         AddHit(item_min, item_max, HitKind::MenuRow, i);
         DrawRowContent(dl, rows[static_cast<std::size_t>(i)], item_min, item_max, selected, ease,
                        label_size);
+        if (quick && selected) {
+            const std::vector<QuickItem> items = BuildQuickItems();
+            if (i < static_cast<int>(items.size())) {
+                const std::string hint = QuickItemHint(items[static_cast<std::size_t>(i)]);
+                if (!hint.empty()) {
+                    DrawTooltip(dl, item_max.x + (10.0f * scale), (item_min.y + item_max.y) * 0.5f,
+                                false, QuickItemLabel(items[static_cast<std::size_t>(i)]), hint, alpha);
+                }
+            }
+        }
     }
 
     DrawScrollbar(dl, menu_pos.x + menu_size.x - (8.0f * scale), menu_pos.y + corner_radius,
@@ -1241,8 +1397,8 @@ void RenderStates(ImDrawList* dl, ImVec2 display_size, float ease, const std::ve
     const ImVec2 panel_max(panel_min.x + panel_size.x, panel_min.y + panel_size.y);
     const float list_right = panel_min.x + (400.0f * scale);
 
-    dl->AddRectFilled(panel_min, panel_max, IM_COL32(45, 45, 45, alpha), corner_radius);
-    dl->AddRectFilled(panel_min, ImVec2(list_right, panel_max.y), IM_COL32(34, 34, 34, alpha),
+    dl->AddRectFilled(panel_min, panel_max, PanelColor(alpha), corner_radius);
+    dl->AddRectFilled(panel_min, ImVec2(list_right, panel_max.y), PanelShadeColor(alpha),
                       corner_radius, ImDrawFlags_RoundCornersLeft);
     AddHit(panel_min, panel_max, HitKind::Panel);
 
@@ -1285,14 +1441,14 @@ void RenderStates(ImDrawList* dl, ImVec2 display_size, float ease, const std::ve
                             ImVec2(0.0f, 0.0f), ImVec2(1.0f, 1.0f),
                             IM_COL32(255, 255, 255, alpha), row_radius);
     } else {
-        dl->AddRectFilled(pic_min, pic_max, IM_COL32(28, 28, 28, alpha), row_radius);
+        dl->AddRectFilled(pic_min, pic_max, Themed(28, 28, 28, 225, 229, 234, alpha), row_radius);
         const std::string none = preview.saved_at.empty() ? TrOr("emulator_empty", "Empty")
                                                           : TrOr("emulator_no_preview", "No preview");
         const ImVec2 none_size = font->CalcTextSizeA(label_size, FLT_MAX, 0.0f, none.c_str());
         dl->AddText(font, label_size,
                     ImVec2(pic_min.x + ((pic_w - none_size.x) * 0.5f),
                            pic_min.y + ((pic_h - none_size.y) * 0.5f)),
-                    IM_COL32(150, 150, 150, alpha), none.c_str());
+                    Themed(150, 150, 150, 130, 130, 140, alpha), none.c_str());
     }
     if (!preview.saved_at.empty()) {
         const float caption_size = ImGui::GetFontSize() * 0.7f;
@@ -1300,7 +1456,7 @@ void RenderStates(ImDrawList* dl, ImVec2 display_size, float ease, const std::ve
         dl->AddText(font, caption_size,
                     ImVec2(pane_left + ((pane_right - pane_left - caption_text.x) * 0.5f),
                            pic_max.y + ((caption_h - caption_text.y) * 0.5f) + pad * 0.5f),
-                    IM_COL32(170, 170, 170, alpha), preview.saved_at.c_str());
+                    Themed(170, 170, 170, 90, 90, 100, alpha), preview.saved_at.c_str());
     }
 }
 
@@ -1333,9 +1489,9 @@ void RenderSettings(ImDrawList* dl, ImVec2 display_size, float ease) {
     const ImVec2 panel_max(panel_min.x + panel_size.x, panel_min.y + panel_size.y);
     const float sidebar_right = panel_min.x + (kSidebarWidth * scale);
 
-    dl->AddRectFilled(panel_min, panel_max, IM_COL32(45, 45, 45, alpha), corner_radius);
+    dl->AddRectFilled(panel_min, panel_max, PanelColor(alpha), corner_radius);
     AddHit(panel_min, panel_max, HitKind::Panel);
-    dl->AddRectFilled(panel_min, ImVec2(sidebar_right, panel_max.y), IM_COL32(34, 34, 34, alpha),
+    dl->AddRectFilled(panel_min, ImVec2(sidebar_right, panel_max.y), PanelShadeColor(alpha),
                       corner_radius, ImDrawFlags_RoundCornersLeft);
 
     // sidebar
@@ -1351,7 +1507,7 @@ void RenderSettings(ImDrawList* dl, ImVec2 display_size, float ease) {
         const ImVec2 item_max(sidebar_right - pad, item_min.y + row_height);
         if (active && options_focused) {
             // where the options came from, while focus is on them
-            dl->AddRectFilled(item_min, item_max, IM_COL32(56, 56, 56, alpha), row_radius);
+            dl->AddRectFilled(item_min, item_max, Themed(56, 56, 56, 214, 219, 226, alpha), row_radius);
             const float bar_height = row_height * 0.45f;
             const float bar_y = item_min.y + ((row_height - bar_height) * 0.5f);
             DrawTintSwatch(dl, ImVec2(item_min.x + (6.0f * scale), bar_y),
@@ -1380,11 +1536,11 @@ void RenderSettings(ImDrawList* dl, ImVec2 display_size, float ease) {
     DrawTextWithShadow(dl, font, heading_size,
                        ImVec2(heading_x, panel_min.y + pad +
                                              ((heading_height - heading_text_size.y) * 0.5f)),
-                       IM_COL32(235, 235, 235, alpha),
+                       Themed(235, 235, 235, 40, 40, 50, alpha),
                        EllipsizeText(font, heading_size, heading, pane_right - heading_x));
     const float rule_y = panel_min.y + pad + heading_height;
     dl->AddLine(ImVec2(heading_x, rule_y), ImVec2(pane_right - (20.0f * scale), rule_y),
-                IM_COL32(80, 80, 80, alpha), 1.0f * scale);
+                Themed(80, 80, 80, 205, 210, 216, alpha), 1.0f * scale);
 
     // a line under the list says when the focused option applies on the next start
     const float footer_height = 40.0f * scale;
@@ -1420,7 +1576,7 @@ void RenderSettings(ImDrawList* dl, ImVec2 display_size, float ease) {
         const ImVec2 note_text_size = font->CalcTextSizeA(note_size, FLT_MAX, 0.0f, note.c_str());
         dl->AddText(font, note_size,
                     ImVec2(heading_x, list_bottom + ((footer_height - note_text_size.y) * 0.5f)),
-                    IM_COL32(160, 160, 160, alpha),
+                    Themed(160, 160, 160, 110, 110, 120, alpha),
                     EllipsizeText(font, note_size, note, pane_right - heading_x).c_str());
     }
 }
@@ -1822,9 +1978,14 @@ Action AcceptSelection(const std::vector<MenuRow>& rows) {
             OpenScreen(MenuScreen::SettingsCategories);
             break;
         case QuickItem::Reset:
-            return Action::Reset;
+        case QuickItem::Restart:
         case QuickItem::Exit:
-            return Action::Exit;
+            // asked first, with Cancel selected so a held button cannot confirm
+            s_confirm_item = items[static_cast<std::size_t>(s_selected)];
+            s_confirm_from_side = false;
+            s_menu = MenuScreen::GameConfirm;
+            s_selected = 1;
+            return Action::None;
         }
         return Action::None;
     }
@@ -1967,6 +2128,16 @@ Action AcceptSelection(const std::vector<MenuRow>& rows) {
         }
         return Action::None;
     }
+    case MenuScreen::GameConfirm:
+        if (s_selected == 0) {
+            return s_confirm_item == QuickItem::Restart ? Action::Restart
+                   : s_confirm_item == QuickItem::Reset ? Action::Reset
+                                                        : Action::Exit;
+        }
+        OpenScreen(MenuScreen::QuickMenu);
+        s_selected = s_quick_selected;
+        s_side_focus = s_confirm_from_side;
+        return Action::None;
     case MenuScreen::FolderConfirm: {
         if (s_selected == 0) {
             std::vector<LibraryFolderGroup> groups = FolderGroups();
@@ -2063,6 +2234,21 @@ Action AcceptSelection(const std::vector<MenuRow>& rows) {
     return Action::None;
 }
 
+// What A does on the sidebar: Settings opens; Restart and Exit ask first.
+Action ActivateSidebarItem() {
+    const QuickItem item = kSidebarItems[std::clamp(s_side_selected, 0, kSidebarCount - 1)];
+    s_quick_selected = s_selected;
+    if (item == QuickItem::Settings) {
+        OpenScreen(MenuScreen::SettingsCategories);
+        return Action::None;
+    }
+    s_confirm_item = item;
+    s_confirm_from_side = true;
+    s_menu = MenuScreen::GameConfirm;
+    s_selected = 1; // Cancel
+    return Action::None;
+}
+
 // What B does: one level up, or close the menu from the top.
 Action CancelScreen() {
     switch (s_menu) {
@@ -2126,6 +2312,8 @@ bool IsSelectedRow(HitKind kind, int index) {
         return s_menu == MenuScreen::SettingsCategories && s_selected == index;
     case HitKind::OptionRow:
         return s_menu == MenuScreen::SettingsOptions && s_selected == index;
+    case HitKind::SideItem:
+        return s_side_focus && s_side_selected == index;
     default:
         return false;
     }
@@ -2134,6 +2322,14 @@ bool IsSelectedRow(HitKind kind, int index) {
 // Puts focus on a row: settings rows also move focus between the sidebar and
 // the options pane.
 void SelectRow(HitKind kind, int index) {
+    if (kind == HitKind::SideItem) {
+        s_side_focus = true;
+        s_side_selected = index;
+        return;
+    }
+    if (kind == HitKind::MenuRow && s_menu == MenuScreen::QuickMenu) {
+        s_side_focus = false;
+    }
     if (kind == HitKind::CategoryRow) {
         s_menu = MenuScreen::SettingsCategories;
         s_category_selected = index;
@@ -2179,7 +2375,7 @@ NavInput ApplyTouch(ImVec2 display_size, int item_count, NavInput nav) {
         s_touch_row_height = hit->max.y - hit->min.y;
         s_touch_started_selected = IsSelectedRow(hit->kind, hit->index);
         if (hit->kind == HitKind::MenuRow || hit->kind == HitKind::CategoryRow ||
-            hit->kind == HitKind::OptionRow) {
+            hit->kind == HitKind::OptionRow || hit->kind == HitKind::SideItem) {
             SelectRow(hit->kind, hit->index);
         }
         return nav;
@@ -2219,6 +2415,7 @@ NavInput ApplyTouch(ImVec2 display_size, int item_count, NavInput nav) {
     switch (hit->kind) {
     case HitKind::MenuRow:
     case HitKind::OptionRow:
+    case HitKind::SideItem:
         nav.accept = s_touch_started_selected;
         break;
     case HitKind::CategoryRow:
@@ -2255,6 +2452,9 @@ void SetVisible(bool visible) {
             RefreshLibrary();
         }
         OpenScreen(RootScreen());
+        s_dark = TicoConfig::DarkMode(); // tico's theme may have changed since
+        s_side_focus = false;
+        s_side_selected = 0;
         s_hits.clear();
         s_touch_tracking = false;
         s_touch_ignore = true; // until the finger that may be down lifts
@@ -2283,6 +2483,11 @@ void SetNickname(std::string nickname) {
 
 void SetAvatarTextureId(unsigned long long texture_id) {
     s_avatar_texture_id = texture_id;
+}
+
+void SetSidebarIconTextures(unsigned long long settings, unsigned long long restart,
+                            unsigned long long exit) {
+    s_side_icons = {settings, restart, exit};
 }
 
 void SetBorderTextureId(unsigned long long texture_id) {
@@ -2446,6 +2651,38 @@ Action Render(int display_w, int display_h) {
             item_count = static_cast<int>(rows.size());
         }
     }
+    // the quick menu's sidebar: left onto it, right back to the list; it takes
+    // the d-pad and A while it has focus
+    Action side_action = Action::None;
+    if (s_menu == MenuScreen::QuickMenu) {
+        if (nav.left && !s_side_focus) {
+            // land on the sidebar item level with the row: the rail is centred
+            // on the list, so it starts (rows - items) / 2 rows down; a row
+            // exactly between two items goes to the lower one
+            const float offset = (static_cast<float>(item_count) - kSidebarCount) * 0.5f;
+            s_side_selected = std::clamp(
+                static_cast<int>(std::floor(static_cast<float>(s_selected) - offset + 0.5f)), 0,
+                kSidebarCount - 1);
+            s_side_focus = true;
+            nav.left = false;
+        } else if (nav.right && s_side_focus) {
+            s_side_focus = false;
+            nav.right = false;
+        }
+        if (s_side_focus) {
+            if (nav.up)
+                s_side_selected = (s_side_selected + kSidebarCount - 1) % kSidebarCount;
+            if (nav.down)
+                s_side_selected = (s_side_selected + 1) % kSidebarCount;
+            nav.up = nav.down = false;
+            if (nav.accept) {
+                nav.accept = false;
+                side_action = ActivateSidebarItem();
+                rows = BuildRows();
+                item_count = static_cast<int>(rows.size());
+            }
+        }
+    }
     if (item_count > 0) {
         s_selected = std::clamp(s_selected, 0, item_count - 1);
         if (nav.up)
@@ -2499,6 +2736,9 @@ Action Render(int display_w, int display_h) {
     RenderStatusBar(dl, display_size, ease);
     RenderToast(dl, delta_time);
 
+    if (side_action != Action::None) {
+        result = side_action;
+    }
     if (nav.accept && result == Action::None) {
         result = AcceptSelection(rows);
     }
@@ -2507,11 +2747,11 @@ Action Render(int display_w, int display_h) {
 }
 
 bool IsSaveStateAction(Action action) {
-    return IsActionInRange(action, Action::SaveStateSlot1, Action::SaveStateSlot4);
+    return IsActionInRange(action, Action::SaveStateSlot1, Action::SaveStateSlot6);
 }
 
 bool IsLoadStateAction(Action action) {
-    return IsActionInRange(action, Action::LoadStateSlot1, Action::LoadStateSlot4);
+    return IsActionInRange(action, Action::LoadStateSlot1, Action::LoadStateSlot6);
 }
 
 int GetStateSlotForAction(Action action) {

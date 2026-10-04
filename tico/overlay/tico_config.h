@@ -20,6 +20,8 @@ void ReloadConfig();
 // The Animated Border tint picked in tico's Screen Colors (display.jsonc
 // "border_tint"), indexing tico-nx's TintPalette. 0 when unset.
 int BorderTint();
+// tico's theme (dark_mode in display.jsonc); tico starts in the light one.
+bool DarkMode();
 
 // Returns the string value for `key`, or `default_value` if the key is absent.
 std::string GetConfigValue(std::string_view key, std::string_view default_value = {});

@@ -73,6 +73,9 @@ static std::unique_ptr<TicoCore> g_core;
 static bool g_standalone = false;
 static std::string g_pendingLaunch;
 static void ShowLibrary();
+static void StartGame(const std::string &slug, const std::string &romArg, const std::string &titleArg);
+// the title the running game was started with, for Restart
+static std::string g_titleArg;
 
 // Quick menu
 static bool g_menuOpen = false;
@@ -979,6 +982,22 @@ static void RunMenuAction()
             g_core->Reset();
         CloseMenu();
         return;
+    case Action::Restart:
+        // Load the game again from disk, as if it were started anew: the core
+        // unloads first (saving the game), so two never run at once.
+        if (g_core)
+        {
+            const std::string path = g_core->GetGamePath();
+            const std::string slug = TicoConfig::CURRENT_SLUG;
+            const std::string title = g_titleArg;
+            CloseMenu();
+            TicoVulkan::WaitIdle();
+            g_core.reset();
+            StopFastForward();
+            AudioFlushCallback(); // nothing of the old session plays into the new one
+            StartGame(slug, path, title);
+        }
+        return;
     default:
         break;
     }
@@ -1226,6 +1245,32 @@ static int FramesThisRefresh()
     const int frames = static_cast<int>(g_ffFrameBudget);
     g_ffFrameBudget -= frames;
     return std::max(1, frames);
+}
+
+// The display refreshes at 60 Hz and vsync paces the loop, so the core's own
+// frame rate has to be mapped onto that. Content near 60 Hz (NTSC, 60.10 fps)
+// runs one core frame per vsync, with audio stretched to absorb the small
+// difference. Anything else (PAL, 50.007 fps) is paced by an accumulator so it
+// runs at real speed instead of 60/50 = 120%.
+static constexpr double DISPLAY_HZ = 60.0;
+static double g_pacedFps = 0.0;
+static double g_frameStep = 1.0;
+static double g_frameAccum = 0.0;
+
+static void UpdateFramePacing()
+{
+    double fps = g_core->GetFPS();
+    if (fps <= 0.0 || fps == g_pacedFps)
+        return;
+
+    g_pacedFps = fps;
+    double effectiveFps = std::fabs(fps - DISPLAY_HZ) < 1.0 ? DISPLAY_HZ : fps;
+    g_frameStep = effectiveFps / DISPLAY_HZ;
+    g_frameAccum = 0.0;
+
+    g_audio.SetCoreSampleRate(g_core->GetSampleRate() * (effectiveFps / fps));
+    LOG_INFO("AUDIO", "Core %.3f fps, %.0f Hz: running %.3f core frames per vsync",
+             fps, g_core->GetSampleRate(), g_frameStep);
 }
 
 static bool FastForwardUncapped()
@@ -1477,6 +1522,7 @@ static void StartGame(const std::string &slug, const std::string &romArg, const 
         romPath = romArg;
     }
     TicoConfig::SetSlug(slug);
+    g_titleArg = titleArg;
     LOG_INFO("HOME", "Console slug: %s, ROM: %s", slug.c_str(), romPath.c_str());
     TicoConfig::MakeDirs(TicoConfig::SavesPath());
     TicoConfig::MakeDirs(TicoConfig::StatesPath());
@@ -1508,8 +1554,7 @@ static void StartGame(const std::string &slug, const std::string &romArg, const 
         }
         return;
     }
-    g_audio.SetCoreSampleRate(g_core->GetSampleRate());
-    LOG_INFO("AUDIO", "Configured audio pipeline for %.0f Hz core output", g_core->GetSampleRate());
+    g_pacedFps = 0.0; // UpdateFramePacing sets the audio rate for this game
 }
 
 // Back to the library: the core unloads (saving the game and its clock).
@@ -1667,8 +1712,13 @@ void Render()
     {
         if (frameCount <= 3)
             LOG_DEBUG("RENDER", "Frame %d: Calling RunFrame", frameCount);
-        for (int i = FramesThisRefresh(); i > 0; --i)
+        UpdateFramePacing();
+        g_frameAccum += g_frameStep * FramesThisRefresh();
+        while (g_frameAccum >= 1.0)
+        {
+            g_frameAccum -= 1.0;
             g_core->RunFrame();
+        }
     }
     else if (g_core)
     {
@@ -1804,7 +1854,7 @@ int main(int argc, char *argv[])
 
     g_overlayReady = ImGuiOverlay::Init();
     // Save/Load State show each slot's picture and when it was saved.
-    static std::array<ImTextureID, 4> slotPictures{};
+    static std::array<ImTextureID, 6> slotPictures{};
     OverlayUI::SetSlotPreviewCallback([](int slot) {
         OverlayUI::SlotPreview preview;
         if (slot < 1 || slot > (int)slotPictures.size() || !g_core)
@@ -1830,6 +1880,23 @@ int main(int argc, char *argv[])
             preview.aspect = g_core->GetAspectRatio();
         return preview;
     });
+    // Cheats from the game's .cht/.cheats file; the menu hides them in hardcore.
+    OverlayUI::SetCheatCallbacks(
+        [] {
+            std::vector<OverlayUI::CheatMenuEntry> entries;
+            if (!g_core)
+                return entries;
+            const auto &cheats = g_core->GetCheats();
+            for (size_t i = 0; i < cheats.size(); ++i)
+                entries.push_back({cheats[i].name, cheats[i].enabled, true, (int)i, false});
+            return entries;
+        },
+        [](int index) {
+            if (!g_core || index < 0)
+                return false;
+            g_core->ToggleCheat((size_t)index);
+            return true;
+        });
     OverlayUI::SetSlotOccupiedCallback([](int slot) {
         struct stat st;
         return g_core && slot >= 1 && stat(StatePath(slot - 1).c_str(), &st) == 0;
@@ -1840,7 +1907,12 @@ int main(int argc, char *argv[])
     // tico launches with argv[1] = console slug, argv[2] = ROM path,
     // argv[3] = title. Without a ROM (e.g. from the homebrew menu) the library
     // lists the ROM folders instead.
-    if (argc >= 3)
+    if (argc >= 3 && strchr(argv[1], '/'))
+    {
+        // tico before {slug} in the launch line: argv[1] = ROM, argv[2] = title
+        StartGame(SlugForRom(argv[1]), argv[1], argv[2] ? argv[2] : "");
+    }
+    else if (argc >= 3)
     {
         StartGame(argv[1], argv[2], argc >= 4 && argv[3] ? argv[3] : "");
     }
@@ -1887,6 +1959,7 @@ int main(int argc, char *argv[])
     LOG_INFO("HOME", "Starting cleanup...");
     TicoVulkan::WaitIdle();
     OverlayUI::SetSlotOccupiedCallback(nullptr);
+    OverlayUI::SetCheatCallbacks(nullptr, nullptr);
     OverlayUI::SetSlotPreviewCallback(nullptr);
     OverlayUI::SetShaderCallbacks({});
     OverlayUI::SetLibraryCallbacks({});

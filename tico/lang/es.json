@@ -16,7 +16,7 @@
     "emulator_on": "Sí",
     "emulator_off": "No",
     "emulator_toggle": "Alternar",
-    "emulator_no_cheats": "No hay trucos",
+    "emulator_no_cheats": "No hay trucos en sdmc:/tico/cheats/",
     "emulator_rewind": "Rewind",
     "emulator_no_rewind_points": "Nothing to rewind to yet",
     "emulator_seconds_ago": "%d seconds ago",
@@ -537,5 +537,11 @@
     "settings_gambatte_value_unlimited": "Ilimitado",
     "settings_gambatte_value_up": "Arriba",
     "emulator_sd_card": "Tarjeta SD",
-    "emulator_no_preview": "Sin vista previa"
+    "emulator_no_preview": "Sin vista previa",
+    "emulator_restart": "Reiniciar",
+    "emulator_restart_confirm": "¿Reiniciar el juego? Se perderá el progreso desde tu último guardado.",
+    "emulator_exit_confirm": "¿Salir del juego? Se perderá el progreso desde tu último guardado.",
+    "emulator_reset_confirm": "¿Reiniciar el juego desde cero? Se perderá el progreso desde tu último guardado.",
+    "emulator_reset_hint": "Como pulsar el botón de reinicio de la consola: el juego empieza de nuevo sin cerrarse.",
+    "emulator_restart_hint": "Cierra y vuelve a abrir el juego, como si lo iniciaras de nuevo desde tico."
 }

@@ -4,6 +4,7 @@
 
 #include "overlay/imgui_overlay.h"
 
+#include <algorithm>
 #include <array>
 #include <cstdint>
 #include <string>
@@ -12,6 +13,9 @@
 #include "imgui.h"
 #define STB_IMAGE_IMPLEMENTATION
 #include "deps/stb/stb_image.h"
+// nanosvg is implemented in ra_alerts.cpp
+#include "deps/nanosvg/nanosvg.h"
+#include "deps/nanosvg/nanosvgrast.h"
 
 #ifdef __SWITCH__
 #include <switch.h>
@@ -49,6 +53,8 @@ OverlayUI::NavInput s_nav{};
 OverlayUI::Action s_action = OverlayUI::Action::None;
 ImTextureID s_avatar_texture = ImTextureID_Invalid;
 ImTextureID s_border_texture = ImTextureID_Invalid;
+// the quick menu sidebar's icons: Settings, Restart, Exit Game
+std::array<ImTextureID, 3> s_side_icons = {ImTextureID_Invalid, ImTextureID_Invalid, ImTextureID_Invalid};
 
 // Uploads an RGBA image decoded by stb_image and frees it. Returns the
 // texture, or ImTextureID_Invalid when there was no image.
@@ -154,6 +160,44 @@ void LoadAvatar() {
 
 } // namespace
 
+// A white SVG icon rasterized to a size x size texture.
+ImTextureID LoadSvgIcon(const std::string& path, int size) {
+    NSVGimage* image = nsvgParseFromFile(path.c_str(), "px", 96.0f);
+    if (!image) {
+        LOG_WARN("OVERLAY", "no icon at %s", path.c_str());
+        return ImTextureID_Invalid;
+    }
+    ImTextureID texture = ImTextureID_Invalid;
+    if (NSVGrasterizer* rast = nsvgCreateRasterizer()) {
+        std::vector<unsigned char> rgba(static_cast<std::size_t>(size) * size * 4, 0);
+        const float longest = std::max(image->width, image->height);
+        const float scale = longest > 0.0f ? size / longest : 1.0f;
+        // centre the shorter side
+        const float dx = (size - (image->width * scale)) * 0.5f;
+        const float dy = (size - (image->height * scale)) * 0.5f;
+        nsvgRasterize(rast, image, dx, dy, scale, rgba.data(), size, size, size * 4);
+        nsvgDeleteRasterizer(rast);
+        texture = TicoVulkan::CreateTextureRGBA(rgba.data(), size, size);
+    }
+    nsvgDelete(image);
+    return texture;
+}
+
+void LoadSidebarIcons() {
+#ifdef __SWITCH__
+    const std::string dir = "romfs:/assets/icons/";
+#else
+    const std::string dir = "tico/assets/icons/";
+#endif
+    const char* names[] = {"gear.svg", "rotate-left.svg", "right-from-bracket.svg"};
+    for (std::size_t i = 0; i < s_side_icons.size(); ++i) {
+        s_side_icons[i] = LoadSvgIcon(dir + names[i], 64);
+    }
+    OverlayUI::SetSidebarIconTextures(static_cast<unsigned long long>(s_side_icons[0]),
+                                      static_cast<unsigned long long>(s_side_icons[1]),
+                                      static_cast<unsigned long long>(s_side_icons[2]));
+}
+
 bool Init() {
     if (s_initialized) {
         return true;
@@ -165,6 +209,7 @@ bool Init() {
 #endif
     LoadAvatar();
     LoadBorder();
+    LoadSidebarIcons();
     s_visible = false;
     s_action = OverlayUI::Action::None;
     s_initialized = true;
@@ -176,12 +221,14 @@ void Shutdown() {
     if (!s_initialized) {
         return;
     }
-    for (ImTextureID* texture : {&s_avatar_texture, &s_border_texture}) {
+    for (ImTextureID* texture : {&s_avatar_texture, &s_border_texture, &s_side_icons[0],
+                                 &s_side_icons[1], &s_side_icons[2]}) {
         if (*texture != ImTextureID_Invalid) {
             TicoVulkan::DestroyTexture(*texture);
             *texture = ImTextureID_Invalid;
         }
     }
+    OverlayUI::SetSidebarIconTextures(0, 0, 0);
     OverlayUI::SetAvatarTextureId(0);
     OverlayUI::SetBorderTextureId(0);
     OverlayUI::SetVisible(false);
