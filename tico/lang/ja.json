@@ -37,7 +37,7 @@
     "emulator_vertical": "縦向き",
     "emulator_horizontal_inverted": "横向き反転",
     "emulator_vertical_inverted": "縦向き反転",
-    "emulator_default": "デフォルト",
+    "emulator_default": "既定",
     "emulator_side_by_side": "左右に並べる",
     "emulator_stacked": "上下に並べる",
     "emulator_single_screen": "単一画面",
@@ -245,5 +245,12 @@
     "settings_gambatte_value_twb64_pack_2": "TWB64 - パック 2",
     "settings_gambatte_value_twb64_pack_3": "TWB64 - パック 3",
     "settings_gambatte_value_unlimited": "無制限",
-    "settings_gambatte_value_up": "上"
+    "settings_gambatte_value_up": "上",
+    "emulator_library": "ライブラリ",
+    "emulator_remove": "削除",
+    "emulator_add_folder": "フォルダーを追加",
+    "emulator_use_folder": "このフォルダーを使う",
+    "emulator_no_games": "ゲームが見つかりません。設定 > ライブラリでフォルダーを追加してください",
+    "emulator_exit": "終了",
+    "emulator_load_game_failed": "ゲームを読み込めませんでした"
 }

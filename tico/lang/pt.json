@@ -618,5 +618,12 @@
     "settings_gambatte_value_twb64_pack_2": "TWB64 — Pacote 2",
     "settings_gambatte_value_twb64_pack_3": "TWB64 — Pacote 3",
     "settings_gambatte_value_unlimited": "Ilimitado",
-    "settings_gambatte_value_up": "Cima"
+    "settings_gambatte_value_up": "Cima",
+    "emulator_library": "Biblioteca",
+    "emulator_remove": "Remover",
+    "emulator_add_folder": "Adicionar pasta",
+    "emulator_use_folder": "Usar esta pasta",
+    "emulator_no_games": "Nenhum jogo encontrado. Adicione uma pasta em Configurações > Biblioteca",
+    "emulator_exit": "Sair",
+    "emulator_load_game_failed": "Não foi possível carregar o jogo"
 }

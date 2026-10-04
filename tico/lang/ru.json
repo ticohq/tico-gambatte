@@ -226,5 +226,12 @@
     "settings_gambatte_value_twb64_pack_2": "TWB64 - Пакет 2",
     "settings_gambatte_value_twb64_pack_3": "TWB64 - Пакет 3",
     "settings_gambatte_value_unlimited": "Без ограничений",
-    "settings_gambatte_value_up": "Вверх"
+    "settings_gambatte_value_up": "Вверх",
+    "emulator_library": "Библиотека",
+    "emulator_remove": "Удалить",
+    "emulator_add_folder": "Добавить папку",
+    "emulator_use_folder": "Использовать эту папку",
+    "emulator_no_games": "Игры не найдены. Добавьте папку в Настройки > Библиотека",
+    "emulator_exit": "Выход",
+    "emulator_load_game_failed": "Не удалось загрузить игру"
 }
