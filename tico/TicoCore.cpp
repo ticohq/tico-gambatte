@@ -11,6 +11,7 @@
 #include <SDL.h>
 #include <SDL_mixer.h>
 #include <cstring>
+#include <ctime>
 #include <fstream>
 #include <string.h>
 #include <stdio.h>
@@ -42,6 +43,80 @@ static bool s_vibrationInitialized = false;
 
 
 #define tico_debug_log(...) LOG_CORE(__VA_ARGS__)
+
+// The cartridge clock (MBC3/HuC3), kept beside the save as <rom>.rtc like
+// RetroArch does. Gambatte stores it as the Unix time the clock counts from,
+// so it keeps running with the system clock while the game is closed.
+static std::string RtcPath(const std::string &gamePath)
+{
+    std::string filename = gamePath;
+    size_t lastSlash = filename.find_last_of("/\\");
+    if (lastSlash != std::string::npos)
+        filename = filename.substr(lastSlash + 1);
+    size_t lastDot = filename.find_last_of(".");
+    if (lastDot != std::string::npos)
+        filename = filename.substr(0, lastDot);
+    return TicoConfig::SavesPath() + filename + ".rtc";
+}
+
+// Seconds since local midnight on the console's clock and time zone.
+static long LocalSecondsOfDay(time_t now)
+{
+#ifdef __SWITCH__
+    TimeCalendarTime calendar;
+    TimeCalendarAdditionalInfo info;
+    if (R_SUCCEEDED(timeToCalendarTimeWithMyRule((u64)now, &calendar, &info)))
+        return calendar.hour * 3600L + calendar.minute * 60L + calendar.second;
+#endif
+    struct tm local = {};
+    if (localtime_r(&now, &local))
+        return local.tm_hour * 3600L + local.tm_min * 60L + local.tm_sec;
+    return 0;
+}
+
+void TicoCore::LoadRtcData()
+{
+    const size_t size = retro_get_memory_size(RETRO_MEMORY_RTC);
+    void *data = retro_get_memory_data(RETRO_MEMORY_RTC);
+    if (!size || !data)
+        return;
+
+    const std::string path = RtcPath(m_gamePath);
+    std::ifstream file(path, std::ios::binary);
+    if (file && file.read((char *)data, size))
+    {
+        tico_debug_log("Loaded RTC from %s", path.c_str());
+        return;
+    }
+
+    // No clock yet: start it at the console's local time of day (day 0), so
+    // the game reads the Switch clock instead of decades since the epoch,
+    // which also sets the day-counter overflow flag games read as "clock lost".
+    if (size == sizeof(uint64_t))
+    {
+        const time_t now = time(nullptr);
+        const uint64_t baseTime = (uint64_t)now - (uint64_t)LocalSecondsOfDay(now);
+        memcpy(data, &baseTime, sizeof(baseTime));
+        tico_debug_log("RTC started at the local time of day");
+    }
+}
+
+void TicoCore::SaveRtcData()
+{
+    const size_t size = retro_get_memory_size(RETRO_MEMORY_RTC);
+    const void *data = retro_get_memory_data(RETRO_MEMORY_RTC);
+    if (!size || !data)
+        return;
+
+    TicoConfig::MakeDirs(TicoConfig::SavesPath());
+    const std::string path = RtcPath(m_gamePath);
+    std::ofstream file(path, std::ios::binary);
+    if (file)
+    {
+        file.write((const char *)data, size);
+        tico_debug_log("Saved RTC to %s", path.c_str());
+    }
+}
 
 void TicoCore::LoadSaveData()
 {
@@ -800,6 +875,7 @@ bool TicoCore::LoadGame(const std::string &path)
 
     // Load native save data, falling back to legacy .srm saves when needed.
     LoadSaveData();
+    LoadRtcData();
 
     return true;
 }
@@ -810,6 +886,7 @@ void TicoCore::UnloadGame()
         return;
 
     SaveSaveData();
+    SaveRtcData();
 
     // retro_unload_game must run before DestroyHWRenderContext
     tico_debug_log("Calling retro_unload_game...");
