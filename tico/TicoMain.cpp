@@ -68,6 +68,14 @@ static int g_navRepeatFrames = 0;
 static constexpr int kNavInitialDelayFrames = 14;
 static constexpr int kNavRepeatFrames = 6;
 
+// Fast forward (Display > Fast Forward): the hotkey, held or toggled, runs the
+// core at fast_forward_speed by emulating extra frames per presented one;
+// "unlimited" drops vsync instead.
+static bool g_ffHotkeyHeld = false;
+static bool g_ffLatched = false;
+static float g_ffFrameBudget = 0.0f;
+static void StopFastForward();
+
 // HUD frame counter
 static int g_hudFrames = 0;
 static float g_hudSeconds = 0.0f;
@@ -752,6 +760,7 @@ static void OpenMenu()
     g_navHeldPrev = 0;
     g_navRepeatFrames = 0;
     OverlayUI::SetHardcoreMode(g_core && g_core->IsHardcoreActive());
+    StopFastForward();
     ImGuiOverlay::SetVisible(true);
 }
 
@@ -947,6 +956,93 @@ static void DrawGame(VkCommandBuffer cmd, ImDrawList *dl, ImVec2 displaySize)
         dl->AddImage(tex, ImVec2(rect.x, rect.y), ImVec2(rect.x + rect.z, rect.y + rect.w));
 }
 
+// Whether the fast-forward hotkey is down, and the core button it stands in
+// for (kept from the game while it is the hotkey), or -1.
+static bool FastForwardHotkeyDown(SDL_GameController *pad, int &retroId)
+{
+    const std::string hotkey = OverlayConfig::GetConfigValue("fast_forward_hotkey", "ZR");
+    retroId = -1;
+    if (hotkey == "ZR")
+    {
+        retroId = RETRO_DEVICE_ID_JOYPAD_R2;
+        return SDL_GameControllerGetAxis(pad, SDL_CONTROLLER_AXIS_TRIGGERRIGHT) > 16000;
+    }
+    if (hotkey == "ZL")
+    {
+        retroId = RETRO_DEVICE_ID_JOYPAD_L2;
+        return SDL_GameControllerGetAxis(pad, SDL_CONTROLLER_AXIS_TRIGGERLEFT) > 16000;
+    }
+    if (hotkey == "R")
+    {
+        retroId = RETRO_DEVICE_ID_JOYPAD_R;
+        return SDL_GameControllerGetButton(pad, SDL_CONTROLLER_BUTTON_RIGHTSHOULDER);
+    }
+    if (hotkey == "L")
+    {
+        retroId = RETRO_DEVICE_ID_JOYPAD_L;
+        return SDL_GameControllerGetButton(pad, SDL_CONTROLLER_BUTTON_LEFTSHOULDER);
+    }
+    if (hotkey == "StickR")
+    {
+        retroId = RETRO_DEVICE_ID_JOYPAD_R3;
+        return SDL_GameControllerGetButton(pad, SDL_CONTROLLER_BUTTON_RIGHTSTICK);
+    }
+    if (hotkey == "StickL")
+    {
+        retroId = RETRO_DEVICE_ID_JOYPAD_L3;
+        return SDL_GameControllerGetButton(pad, SDL_CONTROLLER_BUTTON_LEFTSTICK);
+    }
+    return false;
+}
+
+static void UpdateFastForward(SDL_GameController *pad, int &maskedRetroId)
+{
+    const bool down = pad && FastForwardHotkeyDown(pad, maskedRetroId);
+    bool active;
+    if (OverlayConfig::GetConfigValue("fast_forward_mode", "hold") == "toggle")
+    {
+        if (down && !g_ffHotkeyHeld)
+            g_ffLatched = !g_ffLatched;
+        active = g_ffLatched;
+    }
+    else
+    {
+        active = down;
+    }
+    g_ffHotkeyHeld = down;
+    if (!active)
+        g_ffFrameBudget = 0.0f;
+    g_audio.SetFastForward(active);
+}
+
+static void StopFastForward()
+{
+    g_ffLatched = false;
+    g_ffFrameBudget = 0.0f;
+    g_audio.SetFastForward(false);
+}
+
+// Core frames to run before the next present.
+static int FramesThisRefresh()
+{
+    if (!g_audio.IsFastForwarding())
+        return 1;
+    const std::string speed = OverlayConfig::GetConfigValue("fast_forward_speed", "200");
+    if (speed == "unlimited")
+        return 1; // vsync is off instead
+    float rate = std::max(1.0f, std::atoi(speed.c_str()) / 100.0f);
+    g_ffFrameBudget += rate;
+    const int frames = static_cast<int>(g_ffFrameBudget);
+    g_ffFrameBudget -= frames;
+    return std::max(1, frames);
+}
+
+static bool FastForwardUncapped()
+{
+    return g_audio.IsFastForwarding() &&
+           OverlayConfig::GetConfigValue("fast_forward_speed", "200") == "unlimited";
+}
+
 void HandleInput()
 {
     SDL_GameController *controllers[4] = {nullptr, nullptr, nullptr, nullptr};
@@ -1050,11 +1146,6 @@ void HandleInput()
             bool zl = SDL_GameControllerGetAxis(controller, SDL_CONTROLLER_AXIS_TRIGGERLEFT) > 16000;
             bool zr = SDL_GameControllerGetAxis(controller, SDL_CONTROLLER_AXIS_TRIGGERRIGHT) > 16000;
 
-            if (p == 0)
-            {
-                g_audio.SetFastForward(zr);
-            }
-
             // Switch ZL -> RetroPad L2
             g_core->SetInputState(p, RETRO_DEVICE_ID_JOYPAD_L2, zl);
             // Switch ZR -> RetroPad R2
@@ -1071,6 +1162,12 @@ void HandleInput()
             g_core->SetAnalogState(p, RETRO_DEVICE_INDEX_ANALOG_RIGHT, RETRO_DEVICE_ID_ANALOG_Y,
                                    SDL_GameControllerGetAxis(controller, SDL_CONTROLLER_AXIS_RIGHTY));
         }
+
+        // Player 1's fast-forward hotkey; its button stays out of the game.
+        int maskedRetroId = -1;
+        UpdateFastForward(numControllers > 0 ? controllers[0] : nullptr, maskedRetroId);
+        if (maskedRetroId >= 0)
+            g_core->SetInputState(0, (unsigned)maskedRetroId, false);
     }
 }
 
@@ -1116,7 +1213,8 @@ void Render()
     {
         if (frameCount <= 3)
             LOG_DEBUG("RENDER", "Frame %d: Calling RunFrame", frameCount);
-        g_core->RunFrame();
+        for (int i = FramesThisRefresh(); i > 0; --i)
+            g_core->RunFrame();
     }
     else if (g_core)
     {
@@ -1329,7 +1427,7 @@ int main(int argc, char *argv[])
         }
 #endif
 
-        bool fastForward = g_audio.IsFastForwarding();
+        bool fastForward = FastForwardUncapped();
         if (fastForward != lastFastForward)
         {
             TicoVulkan::SetVsync(!fastForward);
