@@ -313,5 +313,10 @@
     "emulator_exit_confirm": "Spiel beenden? Fortschritt seit dem letzten Speichern geht verloren.",
     "emulator_reset_confirm": "Spiel zurücksetzen? Fortschritt seit dem letzten Speichern geht verloren.",
     "emulator_reset_hint": "Wie die Reset-Taste der Konsole: Das Spiel beginnt neu, ohne geschlossen zu werden.",
-    "emulator_restart_hint": "Schließt das Spiel und öffnet es erneut, als würdest du es wieder aus tico starten."
+    "emulator_restart_hint": "Schließt das Spiel und öffnet es erneut, als würdest du es wieder aus tico starten.",
+    "emulator_auto_slot": "Automatisch (%s)",
+    "emulator_auto_loaded": "Automatische Sicherung geladen",
+    "emulator_continue": "Fortsetzen",
+    "emulator_start_over": "Neu beginnen",
+    "emulator_resume_title": "Dort weitermachen, wo du aufgehört hast?"
 }

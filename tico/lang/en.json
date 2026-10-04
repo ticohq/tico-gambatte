@@ -107,5 +107,10 @@
     "emulator_exit_confirm": "Exit the game? Progress since your last save will be lost.",
     "emulator_reset_confirm": "Reset the game? Progress since your last save will be lost.",
     "emulator_reset_hint": "Like pressing the console's reset button: the game starts over without closing.",
-    "emulator_restart_hint": "Closes and reopens the game, as if you launched it again from tico."
+    "emulator_restart_hint": "Closes and reopens the game, as if you launched it again from tico.",
+    "emulator_auto_slot": "Auto (%s)",
+    "emulator_auto_loaded": "Auto save loaded",
+    "emulator_continue": "Continue",
+    "emulator_start_over": "Start Over",
+    "emulator_resume_title": "Continue where you left off?"
 }

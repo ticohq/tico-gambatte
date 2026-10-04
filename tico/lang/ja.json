@@ -170,5 +170,10 @@
     "emulator_exit_confirm": "ゲームを終了しますか？最後にセーブしてからの進行状況は失われます。",
     "emulator_reset_confirm": "ゲームをリセットしますか？最後にセーブしてからの進行状況は失われます。",
     "emulator_reset_hint": "本体のリセットボタンと同じです。ゲームを閉じずに最初からやり直します。",
-    "emulator_restart_hint": "ゲームを閉じて開き直します。ticoからもう一度起動したときと同じです。"
+    "emulator_restart_hint": "ゲームを閉じて開き直します。ticoからもう一度起動したときと同じです。",
+    "emulator_auto_slot": "オート (%s)",
+    "emulator_auto_loaded": "オートセーブをロードしました",
+    "emulator_continue": "続きから",
+    "emulator_start_over": "最初から",
+    "emulator_resume_title": "前回の続きから再開しますか？"
 }

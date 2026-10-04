@@ -471,5 +471,10 @@
     "emulator_exit_confirm": "退出游戏？自上次存档后的进度将会丢失。",
     "emulator_reset_confirm": "重置游戏？自上次存档后的进度将会丢失。",
     "emulator_reset_hint": "相当于按下主机的复位键：游戏不关闭，直接从头开始。",
-    "emulator_restart_hint": "关闭并重新打开游戏，就像从 tico 再次启动一样。"
+    "emulator_restart_hint": "关闭并重新打开游戏，就像从 tico 再次启动一样。",
+    "emulator_auto_slot": "自动 (%s)",
+    "emulator_auto_loaded": "已载入自动存档",
+    "emulator_continue": "继续",
+    "emulator_start_over": "重新开始",
+    "emulator_resume_title": "从上次离开的地方继续吗？"
 }
