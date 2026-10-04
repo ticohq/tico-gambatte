@@ -28,6 +28,11 @@
 #include <sys/stat.h>
 #include <cstring>
 #include "TicoUtils.h"
+#include "deps/stb/stb_image.h"
+#include "deps/stb/stb_image_write.h"
+#include <array>
+#include <ctime>
+#include <vector>
 #include "TicoLogger.h"
 
 #ifdef __SWITCH__
@@ -306,11 +311,104 @@ static size_t AudioSampleBatchCallback(const int16_t *data, size_t frames)
     return g_audio.PushSamples(data, frames);
 }
 
+// The core's last frame, kept for the picture saved with a save state.
+static struct
+{
+    std::vector<uint8_t> data;
+    unsigned width = 0;
+    unsigned height = 0;
+    size_t pitch = 0;
+    retro_pixel_format format = RETRO_PIXEL_FORMAT_RGB565;
+} g_lastFrame;
+
 static void VideoCallback(const void *data, unsigned width, unsigned height, size_t pitch,
                           retro_pixel_format format)
 {
     if (g_chain)
         g_chain->SetSourceFrame(data, width, height, pitch, format);
+    if (data) // null repeats the previous frame
+    {
+        g_lastFrame.data.assign((const uint8_t *)data, (const uint8_t *)data + pitch * height);
+        g_lastFrame.width = width;
+        g_lastFrame.height = height;
+        g_lastFrame.pitch = pitch;
+        g_lastFrame.format = format;
+    }
+}
+
+// One pixel of the last frame as RGBA.
+static void FramePixel(unsigned x, unsigned y, uint8_t *out)
+{
+    const uint8_t *row = g_lastFrame.data.data() + y * g_lastFrame.pitch;
+    switch (g_lastFrame.format)
+    {
+    case RETRO_PIXEL_FORMAT_XRGB8888:
+    {
+        uint32_t p;
+        memcpy(&p, row + x * 4, 4);
+        out[0] = (p >> 16) & 0xFF;
+        out[1] = (p >> 8) & 0xFF;
+        out[2] = p & 0xFF;
+        break;
+    }
+    case RETRO_PIXEL_FORMAT_0RGB1555:
+    {
+        uint16_t p;
+        memcpy(&p, row + x * 2, 2);
+        out[0] = ((p >> 10) & 0x1F) * 255 / 31;
+        out[1] = ((p >> 5) & 0x1F) * 255 / 31;
+        out[2] = (p & 0x1F) * 255 / 31;
+        break;
+    }
+    default: // RGB565
+    {
+        uint16_t p;
+        memcpy(&p, row + x * 2, 2);
+        out[0] = ((p >> 11) & 0x1F) * 255 / 31;
+        out[1] = ((p >> 5) & 0x3F) * 255 / 63;
+        out[2] = (p & 0x1F) * 255 / 31;
+        break;
+    }
+    }
+    out[3] = 255;
+}
+
+// Saves the last frame beside a save state, shrunk to fit 256x192 (box
+// filtered), just big enough for the Save/Load State panel.
+static void SaveStatePicture(const std::string &path)
+{
+    if (g_lastFrame.data.empty() || !g_lastFrame.width || !g_lastFrame.height)
+        return;
+    const unsigned srcW = g_lastFrame.width, srcH = g_lastFrame.height;
+    const float fit = std::min({1.0f, 256.0f / srcW, 192.0f / srcH});
+    const unsigned dstW = std::max(1u, (unsigned)(srcW * fit));
+    const unsigned dstH = std::max(1u, (unsigned)(srcH * fit));
+    std::vector<uint8_t> out(dstW * dstH * 4);
+    for (unsigned y = 0; y < dstH; y++)
+    {
+        const unsigned y0 = y * srcH / dstH, y1 = std::max(y0 + 1, (y + 1) * srcH / dstH);
+        for (unsigned x = 0; x < dstW; x++)
+        {
+            const unsigned x0 = x * srcW / dstW, x1 = std::max(x0 + 1, (x + 1) * srcW / dstW);
+            unsigned sum[3] = {0, 0, 0}, n = 0;
+            for (unsigned sy = y0; sy < y1; sy++)
+                for (unsigned sx = x0; sx < x1; sx++)
+                {
+                    uint8_t px[4];
+                    FramePixel(sx, sy, px);
+                    sum[0] += px[0];
+                    sum[1] += px[1];
+                    sum[2] += px[2];
+                    n++;
+                }
+            uint8_t *dst = &out[(y * dstW + x) * 4];
+            dst[0] = sum[0] / n;
+            dst[1] = sum[1] / n;
+            dst[2] = sum[2] / n;
+            dst[3] = 255;
+        }
+    }
+    stbi_write_png(path.c_str(), (int)dstW, (int)dstH, 4, out.data(), (int)dstW * 4);
 }
 
 static void AudioFlushCallback()
@@ -889,6 +987,8 @@ static void RunMenuAction()
     {
         const int slot = OverlayUI::GetStateSlotForAction(action);
         const bool saved = g_core->SaveState(StatePath(slot - 1));
+        if (saved)
+            SaveStatePicture(StatePath(slot - 1) + ".png");
         OverlayUI::ShowToast(TrFormat(saved ? "emulator_state_saved" : "emulator_save_failed", slot));
         CloseMenu();
     }
@@ -1703,6 +1803,33 @@ int main(int argc, char *argv[])
     }
 
     g_overlayReady = ImGuiOverlay::Init();
+    // Save/Load State show each slot's picture and when it was saved.
+    static std::array<ImTextureID, 4> slotPictures{};
+    OverlayUI::SetSlotPreviewCallback([](int slot) {
+        OverlayUI::SlotPreview preview;
+        if (slot < 1 || slot > (int)slotPictures.size() || !g_core)
+            return preview;
+        ImTextureID &picture = slotPictures[slot - 1];
+        TicoVulkan::DestroyTexture(picture); // the slot may have been saved again
+        picture = ImTextureID_Invalid;
+        const std::string path = StatePath(slot - 1);
+        struct stat st;
+        if (stat(path.c_str(), &st) != 0)
+            return preview;
+        char when[32];
+        std::strftime(when, sizeof(when), "%Y-%m-%d %H:%M", std::localtime(&st.st_mtime));
+        preview.saved_at = when;
+        int w = 0, h = 0, channels = 0;
+        if (unsigned char *rgba = stbi_load((path + ".png").c_str(), &w, &h, &channels, 4))
+        {
+            picture = TicoVulkan::CreateTextureRGBA(rgba, w, h);
+            stbi_image_free(rgba);
+        }
+        preview.texture = (unsigned long long)picture;
+        if (g_core->GetAspectRatio() > 0.1f)
+            preview.aspect = g_core->GetAspectRatio();
+        return preview;
+    });
     OverlayUI::SetSlotOccupiedCallback([](int slot) {
         struct stat st;
         return g_core && slot >= 1 && stat(StatePath(slot - 1).c_str(), &st) == 0;
@@ -1760,6 +1887,7 @@ int main(int argc, char *argv[])
     LOG_INFO("HOME", "Starting cleanup...");
     TicoVulkan::WaitIdle();
     OverlayUI::SetSlotOccupiedCallback(nullptr);
+    OverlayUI::SetSlotPreviewCallback(nullptr);
     OverlayUI::SetShaderCallbacks({});
     OverlayUI::SetLibraryCallbacks({});
     OverlayUI::SetLibraryFolderCallbacks({});

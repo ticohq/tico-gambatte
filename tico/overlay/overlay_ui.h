@@ -66,6 +66,18 @@ bool HasTransientContent();
 using SlotOccupiedFn = std::function<bool(int slot)>;
 void SetSlotOccupiedCallback(SlotOccupiedFn callback);
 
+// What the Save/Load State panel shows beside a slot: the picture taken when
+// it was saved (0 when there is none) and when that was.
+struct SlotPreview {
+    unsigned long long texture = 0;
+    float aspect = 4.0f / 3.0f; // width / height to draw the picture at
+    std::string saved_at;       // e.g. "2026-10-04 03:21"; empty for an empty slot
+};
+// Called for each slot (1-based) when Save or Load State opens. The frontend
+// owns the textures and frees the previous one for a slot when asked again.
+using SlotPreviewFn = std::function<SlotPreview(int slot)>;
+void SetSlotPreviewCallback(SlotPreviewFn callback);
+
 struct CheatMenuEntry {
     std::string name;
     bool enabled = false;
