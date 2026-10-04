@@ -156,9 +156,9 @@ private:
 
     /// The loaded ROM, unpacked; kept for RetroAchievements hashing.
     std::vector<uint8_t> m_romData;
-    static bool IsZipPath(const std::string &path);
+    static bool IsArchivePath(const std::string &path);
     static bool ReadRomFile(const std::string &path, std::vector<uint8_t> &out);
-    static bool ReadRomFromZip(const std::string &path, std::vector<uint8_t> &out);
+    static bool ReadRomFromArchive(const std::string &path, std::vector<uint8_t> &out);
 
     /// @name Libretro static callbacks (dispatch to instance)
     static bool EnvironmentCallback(unsigned cmd, void *data);

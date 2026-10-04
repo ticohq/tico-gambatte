@@ -5,7 +5,8 @@
 
 #include "TicoCore.h"
 #include "TicoVulkan.h"
-#include <minizip/unzip.h>
+#include <archive.h>
+#include <archive_entry.h>
 #include "TicoConfig.h"
 #include <algorithm>
 #include <json.hpp>
@@ -778,10 +779,6 @@ bool TicoCore::Init()
 }
 
 //==============================================================================
-// Game Loading
-//==============================================================================
-
-//==============================================================================
 // ROM files
 //==============================================================================
 
@@ -796,9 +793,9 @@ static bool HasExtension(const std::string &name, const char *ext)
     return true;
 }
 
-bool TicoCore::IsZipPath(const std::string &path)
+bool TicoCore::IsArchivePath(const std::string &path)
 {
-    return HasExtension(path, ".zip");
+    return HasExtension(path, ".zip") || HasExtension(path, ".7z") || HasExtension(path, ".rar");
 }
 
 bool TicoCore::ReadRomFile(const std::string &path, std::vector<uint8_t> &out)
@@ -829,39 +826,52 @@ bool TicoCore::ReadRomFile(const std::string &path, std::vector<uint8_t> &out)
     return true;
 }
 
-// The first .gb, .gbc or .dmg in the archive.
-bool TicoCore::ReadRomFromZip(const std::string &path, std::vector<uint8_t> &out)
+// The first .gb, .gbc or .dmg in a .zip, .7z or .rar (libarchive from portlibs).
+bool TicoCore::ReadRomFromArchive(const std::string &path, std::vector<uint8_t> &out)
 {
-    unzFile zip = unzOpen(path.c_str());
-    if (!zip)
+    struct archive *ar = archive_read_new();
+    archive_read_support_format_zip(ar);
+    archive_read_support_format_7zip(ar);
+    archive_read_support_format_rar(ar);
+    archive_read_support_format_rar5(ar);
+    archive_read_support_filter_all(ar);
+    if (archive_read_open_filename(ar, path.c_str(), 64 * 1024) != ARCHIVE_OK)
     {
-        tico_debug_log("ERROR: Not a readable zip: %s", path.c_str());
+        tico_debug_log("ERROR: Not a readable archive: %s (%s)", path.c_str(),
+                       archive_error_string(ar));
+        archive_read_free(ar);
         return false;
     }
+    constexpr size_t kMaxRom = 64u * 1024u * 1024u;
     bool found = false;
-    for (int rc = unzGoToFirstFile(zip); rc == UNZ_OK && !found; rc = unzGoToNextFile(zip))
+    struct archive_entry *entry = nullptr;
+    while (!found && archive_read_next_header(ar, &entry) == ARCHIVE_OK)
     {
-        char name[512] = "";
-        unz_file_info info = {};
-        if (unzGetCurrentFileInfo(zip, &info, name, sizeof(name), nullptr, 0, nullptr, 0) != UNZ_OK)
+        const char *name = archive_entry_pathname(entry);
+        if (!name || archive_entry_filetype(entry) != AE_IFREG)
             continue;
-        const std::string entry = name;
-        if (!HasExtension(entry, ".gb") && !HasExtension(entry, ".gbc") && !HasExtension(entry, ".dmg"))
+        const std::string entryName = name;
+        if (!HasExtension(entryName, ".gb") && !HasExtension(entryName, ".gbc") &&
+            !HasExtension(entryName, ".dmg"))
             continue;
-        if (info.uncompressed_size == 0 || info.uncompressed_size > 64u * 1024u * 1024u)
-            continue;
-        if (unzOpenCurrentFile(zip) != UNZ_OK)
-            continue;
-        out.resize(info.uncompressed_size);
-        const int read = unzReadCurrentFile(zip, out.data(), (unsigned)out.size());
-        unzCloseCurrentFile(zip);
-        found = read == (int)out.size();
+        out.clear();
+        if (archive_entry_size_is_set(entry) && archive_entry_size(entry) > 0)
+            out.reserve((size_t)archive_entry_size(entry));
+        uint8_t chunk[64 * 1024];
+        la_ssize_t read;
+        while ((read = archive_read_data(ar, chunk, sizeof(chunk))) > 0 && out.size() <= kMaxRom)
+            out.insert(out.end(), chunk, chunk + read);
+        found = read == 0 && !out.empty() && out.size() <= kMaxRom;
         if (found)
-            tico_debug_log("Loaded %s from %s", entry.c_str(), path.c_str());
+            tico_debug_log("Loaded %s from %s", entryName.c_str(), path.c_str());
     }
-    unzClose(zip);
+    archive_read_free(ar);
     return found;
 }
+
+//==============================================================================
+// Game Loading
+//==============================================================================
 
 bool TicoCore::LoadGame(const std::string &path)
 {
@@ -882,11 +892,11 @@ bool TicoCore::LoadGame(const std::string &path)
 
     tico_debug_log("Opening ROM file...");
 
-    // need_fullpath = false: load ROM into memory. A .zip holds the ROM, which
-    // the core needs unpacked.
-    if (IsZipPath(path))
+    // need_fullpath = false: load ROM into memory. A .zip, .7z or .rar holds
+    // the ROM, which the core needs unpacked.
+    if (IsArchivePath(path))
     {
-        if (!ReadRomFromZip(path, m_romData))
+        if (!ReadRomFromArchive(path, m_romData))
         {
             tico_debug_log("ERROR: No Game Boy ROM found in %s", path.c_str());
             return false;
