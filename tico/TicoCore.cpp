@@ -951,6 +951,7 @@ void TicoCore::UnloadGame()
 
     // retro_unload_game must run before DestroyHWRenderContext
     tico_debug_log("Calling retro_unload_game...");
+    tico::PlaytimeFlush(); // the game's last seconds
     retro_unload_game();
     tico_debug_log("retro_unload_game done");
 
@@ -968,6 +969,7 @@ void TicoCore::RunFrame()
         return;
 
     retro_run();
+    tico::PlaytimeFrame(); // this frame's time to the player's playtime
 
     // RetroAchievements frame tick
     if (m_rcClient) {
