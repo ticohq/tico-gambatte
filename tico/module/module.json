@@ -20,7 +20,7 @@
         ".7z",
         ".rar"
       ],
-      "games_file": "gb.json",
+      "games_file": "gb.dat",
       "retroachievements_id": 4,
       "colors": {
         "start": "7FD98A",
@@ -40,7 +40,7 @@
         ".7z",
         ".rar"
       ],
-      "games_file": "gbc.json",
+      "games_file": "gbc.dat",
       "retroachievements_id": 6,
       "colors": {
         "start": "E6C85A",
