@@ -472,5 +472,6 @@
     "emulator_players": "Joueurs",
     "emulator_player": "Joueur %d",
     "emulator_not_connected": "Non connecté",
-    "emulator_change_controllers": "Changer l'ordre des manettes"
+    "emulator_change_controllers": "Changer l'ordre des manettes",
+    "emulator_quick_menu_tip": "Appuyez sur {plus} et {minus} ensemble pour ouvrir le menu rapide"
 }

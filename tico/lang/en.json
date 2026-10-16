@@ -126,5 +126,6 @@
     "emulator_players": "Players",
     "emulator_player": "Player %d",
     "emulator_not_connected": "Not connected",
-    "emulator_change_controllers": "Change controller order"
+    "emulator_change_controllers": "Change controller order",
+    "emulator_quick_menu_tip": "Press {plus} and {minus} together to open the quick menu"
 }

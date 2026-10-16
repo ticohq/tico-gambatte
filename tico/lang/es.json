@@ -562,5 +562,6 @@
     "emulator_players": "Jugadores",
     "emulator_player": "Jugador %d",
     "emulator_not_connected": "Sin conectar",
-    "emulator_change_controllers": "Cambiar el orden de los mandos"
+    "emulator_change_controllers": "Cambiar el orden de los mandos",
+    "emulator_quick_menu_tip": "Pulsa {plus} y {minus} a la vez para abrir el menú rápido"
 }
