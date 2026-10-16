@@ -332,5 +332,6 @@
     "emulator_players": "Spieler",
     "emulator_player": "Spieler %d",
     "emulator_not_connected": "Nicht verbunden",
-    "emulator_change_controllers": "Controller-Reihenfolge ändern"
+    "emulator_change_controllers": "Controller-Reihenfolge ändern",
+    "emulator_quick_menu_tip": "Drücke {plus} und {minus} gleichzeitig, um das Schnellmenü zu öffnen"
 }

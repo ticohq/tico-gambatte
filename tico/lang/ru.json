@@ -172,5 +172,6 @@
     "emulator_players": "Игроки",
     "emulator_player": "Игрок %d",
     "emulator_not_connected": "Не подключён",
-    "emulator_change_controllers": "Изменить порядок контроллеров"
+    "emulator_change_controllers": "Изменить порядок контроллеров",
+    "emulator_quick_menu_tip": "Нажмите {plus} и {minus} вместе, чтобы открыть быстрое меню"
 }

@@ -490,5 +490,6 @@
     "emulator_players": "玩家",
     "emulator_player": "玩家 %d",
     "emulator_not_connected": "未连接",
-    "emulator_change_controllers": "更改手柄顺序"
+    "emulator_change_controllers": "更改手柄顺序",
+    "emulator_quick_menu_tip": "同时按下{plus}和{minus}打开快捷菜单"
 }

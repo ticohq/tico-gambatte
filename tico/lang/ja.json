@@ -189,5 +189,6 @@
     "emulator_players": "プレイヤー",
     "emulator_player": "プレイヤー %d",
     "emulator_not_connected": "未接続",
-    "emulator_change_controllers": "コントローラーの順番を変える"
+    "emulator_change_controllers": "コントローラーの順番を変える",
+    "emulator_quick_menu_tip": "{plus}と{minus}を同時に押すとクイックメニューが開きます"
 }
