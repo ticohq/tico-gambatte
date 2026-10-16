@@ -25,6 +25,16 @@ It adds:
 -   Integrated RetroAchievements with custom alerts
 ----------
 
+## Credits
+
+This fork is built on top of the libretro port of Gambatte, by sinamas.
+All core emulation work belongs to the Gambatte authors and contributors.
+
+- **Gambatte repository** — https://github.com/sinamas/gambatte
+- **libretro Gambatte** — https://github.com/libretro/gambatte-libretro
+
+----------
+
 ## A Note
 
 A lot of work in this scene disappears over time — not because it lacked value, but because it was never shared.
