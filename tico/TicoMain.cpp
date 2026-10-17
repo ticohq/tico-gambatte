@@ -1824,6 +1824,8 @@ void Render()
 
 int main(int argc, char *argv[])
 {
+    // Mesa's shader cache beside this core's files, not at the SD card's root
+    tico::UseShaderCacheDir("sdmc:/tico/system/gambatte/cache/mesa");
     Logger::Instance().ResetLogFile();
 
     g_running = true;
